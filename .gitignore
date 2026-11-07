@@ -426,3 +426,16 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+# Baud build outputs
+/x64/
+Baud/x64/
+
+# Trae/workspace metadata
+.trae/
+.screenshots/
+AGENTS.md
+
+# QCustomPlot full package: only source and GPL.txt are versioned
+qcustomplot/documentation/
+qcustomplot/examples/
