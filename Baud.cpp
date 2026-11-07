@@ -163,8 +163,6 @@ void Baud::buildUi()
     m_refreshPortsButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
     m_refreshPortsButton->setToolTip(QStringLiteral("刷新串口列表"));
     m_baudCombo = new QComboBox(serialGroup);
-    m_baudCombo->setEditable(true);
-    m_baudCombo->setInsertPolicy(QComboBox::NoInsert);
     const QStringList baudRates = {QStringLiteral("3000000"), QStringLiteral("2500000"),
                                    QStringLiteral("2000000"), QStringLiteral("1500000"),
                                    QStringLiteral("1000000"), QStringLiteral("921600"),
@@ -175,7 +173,7 @@ void Baud::buildUi()
                                    QStringLiteral("9600"),    QStringLiteral("4800"),
                                    QStringLiteral("2400"),    QStringLiteral("1200")};
     m_baudCombo->addItems(baudRates);
-    m_baudCombo->setCurrentText(QStringLiteral("2000000"));
+    m_baudCombo->setCurrentText(QStringLiteral("460800"));
 
     m_dataBitsCombo = new QComboBox(serialGroup);
     m_dataBitsCombo->addItem(QStringLiteral("8 位"), static_cast<int>(QSerialPort::Data8));
@@ -528,9 +526,7 @@ SerialSettings Baud::currentSettings() const
     SerialSettings settings;
     settings.portName = m_portCombo->currentData().toString();
 
-    bool baudOk = false;
-    const int baud = m_baudCombo->currentText().trimmed().toInt(&baudOk);
-    settings.baudRate = baudOk ? baud : 0;
+    settings.baudRate = m_baudCombo->currentText().toInt();
 
     settings.dataBits =
         static_cast<QSerialPort::DataBits>(m_dataBitsCombo->currentData().toInt());
@@ -559,11 +555,6 @@ void Baud::onConnectClicked()
     if (settings.portName.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("串口"),
                                  QStringLiteral("没有可用串口，请插入设备后刷新。"));
-        return;
-    }
-    if (settings.baudRate <= 0) {
-        QMessageBox::warning(this, QStringLiteral("串口"),
-                             QStringLiteral("波特率必须是大于 0 的整数。"));
         return;
     }
 

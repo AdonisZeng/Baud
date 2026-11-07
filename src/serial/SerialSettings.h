@@ -10,7 +10,7 @@
 // 串口打开参数
 struct SerialSettings {
     QString portName;
-    qint32 baudRate = 2000000;
+    qint32 baudRate = 460800;
     QSerialPort::DataBits dataBits = QSerialPort::Data8;
     QSerialPort::Parity parity = QSerialPort::NoParity;
     QSerialPort::StopBits stopBits = QSerialPort::OneStop;
