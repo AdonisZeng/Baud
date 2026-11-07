@@ -17,6 +17,7 @@ QCustomPlot 以源码形式编译进本程序，因此本项目整体按 GPL-3.0
 - 版权：Copyright (C) The Qt Company Ltd. and Qt contributors
 - 许可证：LGPL-3.0-only / GPL-3.0-only（Qt 亦提供商业许可）
 - 使用方式：本项目以动态链接方式使用 Qt，不修改 Qt 源码，不静态链接 Qt。
+- 许可文本：`LICENSES/LGPL-3.0.txt`（GPL-3.0 文本见根目录 `LICENSE`）。
 - 上游许可说明：https://www.qt.io/licensing/open-source-lgpl-obligations
 
 分发包含 Qt DLL 的二进制版本时，请随附 Qt 的 LGPL-3.0 / GPL-3.0 许可文本与版权声明，并保持动态链接，使用户能够替换 Qt 库。`x64\Release` 目录中的 `Qt6*.dll` 不应作为源码仓库的一部分提交。

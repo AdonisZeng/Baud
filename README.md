@@ -53,6 +53,7 @@ src/serial/                    串口工作线程与参数
 src/model/                     通道环形缓冲
 src/ui/                        QCustomPlot 波形控件与主题
 qcustomplot/                   QCustomPlot 2.1.1 官方源码（GPLv3）
+LICENSES/                      Qt LGPL-3.0 许可文本
 ```
 
 ## 协议说明
@@ -80,7 +81,7 @@ USB-TTL 的 TX 与 RX 短接后，在发送栏使用回环数据验证：
 第三方组件声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，主要包括：
 
 - **QCustomPlot 2.1.1**：GPL-3.0-or-later，源码位于 `qcustomplot/`，许可文本见 `qcustomplot/GPL.txt`。
-- **Qt 6.11.1**：LGPL-3.0-only / GPL-3.0-only 双许可（另有商业许可）；本项目动态链接 Qt，不修改 Qt 源码。
+- **Qt 6.11.1**：LGPL-3.0-only / GPL-3.0-only 双许可（另有商业许可）；本项目动态链接 Qt，不修改 Qt 源码，LGPL 文本见 `LICENSES/LGPL-3.0.txt`。
 - **VOFA-Protocol-Driver**：MIT，仅作协议参考。
 
 如果分发二进制版本（如 `x64\Release` 目录），请同时附带 `LICENSE`、第三方许可文本与源码获取方式；本项目源码发布于 https://github.com/AdonisZeng/Baud ，Qt 采用动态链接，用户可替换 Qt DLL。若未来希望改用 MIT/Apache 或闭源发布，需要购买 QCustomPlot 商业许可，或替换为自绘/其他授权兼容的绘图实现。

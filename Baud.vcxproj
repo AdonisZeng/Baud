@@ -108,7 +108,8 @@
 if exist "$(VCInstallDir)Redist\MSVC\14.51.36231\x64\Microsoft.VC145.CRT" copy /Y "$(VCInstallDir)Redist\MSVC\14.51.36231\x64\Microsoft.VC145.CRT\*.dll" "$(TargetDir)"
 if exist "$(ProjectDir)LICENSE" copy /Y "$(ProjectDir)LICENSE" "$(TargetDir)"
 if exist "$(ProjectDir)THIRD_PARTY_NOTICES.md" copy /Y "$(ProjectDir)THIRD_PARTY_NOTICES.md" "$(TargetDir)"
-if exist "$(ProjectDir)qcustomplot\GPL.txt" copy /Y "$(ProjectDir)qcustomplot\GPL.txt" "$(TargetDir)QCustomPlot-GPL-3.0.txt"</Command>
+if exist "$(ProjectDir)qcustomplot\GPL.txt" copy /Y "$(ProjectDir)qcustomplot\GPL.txt" "$(TargetDir)QCustomPlot-GPL-3.0.txt"
+if exist "$(ProjectDir)LICENSES\LGPL-3.0.txt" copy /Y "$(ProjectDir)LICENSES\LGPL-3.0.txt" "$(TargetDir)LGPL-3.0.txt"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
