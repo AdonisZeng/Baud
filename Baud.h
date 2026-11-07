@@ -22,6 +22,8 @@ class QThread;
 class QTimer;
 class ScopePlot;
 class SerialWorker;
+class UpdateChecker;
+class UpdateDialog;
 
 class Baud : public QMainWindow {
     Q_OBJECT
@@ -48,6 +50,7 @@ private slots:
     void onPortRefreshTimer();
     void onWorkerOpened();
     void onWorkerClosed();
+    void onWorkerProtocolApplied();
     void onWorkerError(const QString &message);
     void onRawBytesReceived(const QByteArray &bytes);
     void onFramesReceived(const FrameBatch &frames);
@@ -70,6 +73,7 @@ private:
     void appendRawData(const QByteArray &bytes);
     void resetSession();
     void stopSerialThread();
+    void checkForUpdates(bool automatic);
 
     SerialSettings currentSettings() const;
     ProtocolMode currentProtocol() const;
@@ -115,15 +119,18 @@ private:
     QTimer *m_rateTimer = nullptr;
     QTimer *m_portTimer = nullptr;
 
+    UpdateChecker *m_updateChecker = nullptr;
+    UpdateDialog *m_updateDialog = nullptr;
+
     bool m_connected = false;
     bool m_connecting = false;
     bool m_paused = false;
     bool m_shuttingDown = false;
+    bool m_acceptData = true;
     int m_lastChannelCount = 0;
     int m_hexColumn = 0;
 
     qint64 m_rxBytes = 0;
-    qint64 m_txBytes = 0;
     qint64 m_acceptedFrames = 0;
     qint64 m_lastRxBytes = 0;
     qint64 m_lastFrames = 0;

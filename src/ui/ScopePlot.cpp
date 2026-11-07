@@ -6,6 +6,7 @@
 #include "model/ChannelStore.h"
 #include "ui/Theme.h"
 
+#include <QApplication>
 #include <QFont>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -17,14 +18,23 @@ ScopePlot::ScopePlot(QWidget *parent)
 {
     setupStyle();
 
-    connect(this, &QCustomPlot::mousePress, this, [this](QMouseEvent *) {
-        m_followLatest = false;
+    connect(this, &QCustomPlot::mousePress, this, [this](QMouseEvent *event) {
+        m_pressPosition = event->position().toPoint();
+    });
+    connect(this, &QCustomPlot::mouseMove, this, [this](QMouseEvent *event) {
+        if ((event->buttons() & Qt::LeftButton)
+            && (event->position().toPoint() - m_pressPosition).manhattanLength()
+                   > QApplication::startDragDistance()) {
+            m_followLatest = false;
+        }
     });
     connect(this, &QCustomPlot::mouseWheel, this, [this](QWheelEvent *) {
         m_followLatest = false;
+        m_autoY = false;
     });
     connect(this, &QCustomPlot::mouseDoubleClick, this, [this](QMouseEvent *) {
         m_followLatest = true;
+        m_autoY = true;
         m_viewSpan = kDefaultViewSpan;
         refresh();
     });
@@ -48,9 +58,10 @@ void ScopePlot::setupStyle()
     axisRect()->setBackground(QBrush(QColor("#121820")));
     setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
     axisRect()->setRangeDrag(Qt::Horizontal);
-    axisRect()->setRangeZoom(Qt::Horizontal);
+    axisRect()->setRangeZoom(Qt::Horizontal | Qt::Vertical);
     axisRect()->setRangeZoomFactor(0.85);
     setNoAntialiasingOnDrag(true);
+    setToolTip(QStringLiteral("滚轮缩放时间轴与数值轴，拖动平移，双击复位"));
 
     xAxis->setLabel(QStringLiteral("样本"));
     yAxis->setLabel(QStringLiteral("数值"));
@@ -156,8 +167,9 @@ void ScopePlot::rebuildFromStore(const ChannelStore &store)
     if (store.channelCount() <= 0 || store.sampleCount() <= 0)
         return;
 
-    const qint64 from = store.firstStoredIndex();
+    // 只回填当前视窗，避免暂停恢复时把 20 万点/通道全部灌入 QCPGraph
     const qint64 to = store.sampleCount() - 1;
+    const qint64 from = std::max(store.firstStoredIndex(), to - m_viewSpan + 1);
     const int sampleCount = static_cast<int>(to - from + 1);
 
     QVector<double> keys(sampleCount);
@@ -211,6 +223,7 @@ void ScopePlot::clearData()
 
     m_latestSample = -1;
     m_followLatest = true;
+    m_autoY = true;
     if (m_hint)
         m_hint->setVisible(true);
     xAxis->setRange(0, kDefaultViewSpan);
@@ -236,37 +249,39 @@ void ScopePlot::refresh()
         xAxis->setRange(static_cast<double>(lower), upper);
     }
 
-    const QCPRange xRange = xAxis->range();
-    bool found = false;
-    QCPRange yRange;
+    if (m_autoY) {
+        const QCPRange xRange = xAxis->range();
+        bool found = false;
+        QCPRange yRange;
 
-    for (QCPGraph *graph : m_graphs) {
-        if (!graph->visible())
-            continue;
+        for (QCPGraph *graph : m_graphs) {
+            if (!graph->visible())
+                continue;
 
-        bool currentFound = false;
-        const QCPRange range = graph->getValueRange(currentFound, QCP::sdBoth, xRange);
-        if (!currentFound)
-            continue;
+            bool currentFound = false;
+            const QCPRange range = graph->getValueRange(currentFound, QCP::sdBoth, xRange);
+            if (!currentFound)
+                continue;
+            if (!found) {
+                yRange = range;
+                found = true;
+            } else {
+                yRange.expand(range);
+            }
+        }
+
         if (!found) {
-            yRange = range;
-            found = true;
+            yAxis->setRange(-1, 1);
         } else {
-            yRange.expand(range);
+            double lower = yRange.lower;
+            double upper = yRange.upper;
+            if (lower == upper) {
+                lower -= 1.0;
+                upper += 1.0;
+            }
+            const double pad = (upper - lower) * 0.05;
+            yAxis->setRange(lower - pad, upper + pad);
         }
-    }
-
-    if (!found) {
-        yAxis->setRange(-1, 1);
-    } else {
-        double lower = yRange.lower;
-        double upper = yRange.upper;
-        if (lower == upper) {
-            lower -= 1.0;
-            upper += 1.0;
-        }
-        const double pad = (upper - lower) * 0.05;
-        yAxis->setRange(lower - pad, upper + pad);
     }
 
     replot(QCustomPlot::rpQueuedReplot);
@@ -274,6 +289,7 @@ void ScopePlot::refresh()
 
 void ScopePlot::resetYRange()
 {
+    m_autoY = true;
     xAxis->setRange(0, m_viewSpan);
     yAxis->setRange(-1, 1);
     replot(QCustomPlot::rpQueuedReplot);

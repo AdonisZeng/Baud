@@ -38,12 +38,12 @@
   </ImportGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'" Label="QtSettings">
     <QtInstall>qt6_msvc</QtInstall>
-    <QtModules>core;gui;widgets;serialport;printsupport</QtModules>
+    <QtModules>core;gui;widgets;serialport;printsupport;network</QtModules>
     <QtBuildConfig>debug</QtBuildConfig>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'" Label="QtSettings">
     <QtInstall>qt6_msvc</QtInstall>
-    <QtModules>core;gui;widgets;serialport;printsupport</QtModules>
+    <QtModules>core;gui;widgets;serialport;printsupport;network</QtModules>
     <QtBuildConfig>release</QtBuildConfig>
   </PropertyGroup>
   <Target Name="QtMsBuildNotFound"
@@ -115,10 +115,13 @@ if exist "$(ProjectDir)LICENSES\LGPL-3.0.txt" copy /Y "$(ProjectDir)LICENSES\LGP
   <ItemGroup>
     <QtRcc Include="Baud.qrc"/>
     <QtUic Include="Baud.ui"/>
+    <ResourceCompile Include="Baud.rc"/>
     <QtMoc Include="Baud.h"/>
     <QtMoc Include="qcustomplot\qcustomplot.h"/>
     <QtMoc Include="src\serial\SerialWorker.h"/>
     <QtMoc Include="src\ui\ScopePlot.h"/>
+    <QtMoc Include="src\update\UpdateChecker.h"/>
+    <QtMoc Include="src\update\UpdateDialog.h"/>
     <ClCompile Include="Baud.cpp"/>
     <ClCompile Include="main.cpp"/>
     <ClCompile Include="qcustomplot\qcustomplot.cpp"/>
@@ -129,6 +132,9 @@ if exist "$(ProjectDir)LICENSES\LGPL-3.0.txt" copy /Y "$(ProjectDir)LICENSES\LGP
     <ClCompile Include="src\model\ChannelStore.cpp"/>
     <ClCompile Include="src\ui\Theme.cpp"/>
     <ClCompile Include="src\ui\ScopePlot.cpp"/>
+    <ClCompile Include="src\update\UpdateChecker.cpp"/>
+    <ClCompile Include="src\update\UpdateDialog.cpp"/>
+    <ClInclude Include="src\Version.h"/>
 
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

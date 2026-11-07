@@ -72,6 +72,7 @@ void SerialWorker::closePortInternal(bool notify)
     flushPending();
 
     m_open = false;
+    m_port->disconnect(this);
     m_port->close();
     delete m_port;
     m_port = nullptr;
@@ -85,12 +86,15 @@ void SerialWorker::closePortInternal(bool notify)
 
 void SerialWorker::changeProtocol(ProtocolMode mode)
 {
-    if (m_mode == mode)
-        return;
-
-    m_mode = mode;
-    m_parser = createParser(mode);
-    m_pendingFrames.clear();
+    if (m_mode != mode) {
+        m_mode = mode;
+        m_parser = createParser(mode);
+        // 丢弃上一协议残留的原始字节，避免切换后仍被送到监视页
+        m_pendingRaw.clear();
+        m_pendingFrames.clear();
+    }
+    // 无论模式是否变化都要回执，GUI 侧据此恢复接收
+    emit protocolApplied();
 }
 
 void SerialWorker::writeBytes(const QByteArray &bytes)
@@ -144,16 +148,22 @@ void SerialWorker::onSerialError(QSerialPort::SerialPortError error)
         return;
 
     const QString message = QStringLiteral("串口错误：%1").arg(m_port->errorString());
+    emit errorOccurred(message);
 
     switch (error) {
     case QSerialPort::ResourceError:
     case QSerialPort::PermissionError:
     case QSerialPort::DeviceNotFoundError:
-        emit errorOccurred(message);
-        closePortInternal(true);
+        // 不能在 QSerialPort 自己发射信号的调用栈里销毁它：
+        // 先断开信号，再延后到下一轮事件循环关闭并释放
+        m_open = false;
+        if (m_flushTimer)
+            m_flushTimer->stop();
+        m_port->disconnect(this);
+        QMetaObject::invokeMethod(this, [this]() { closePortInternal(true); },
+                                  Qt::QueuedConnection);
         break;
     default:
-        emit errorOccurred(message);
         break;
     }
 }

@@ -43,8 +43,9 @@ FrameBatch JustFloatParser::feed(const QByteArray &bytes)
         }
 
         if (tailIndex % static_cast<int>(sizeof(float)) != 0) {
-            // 数据区长度不是 4 的倍数，说明帧头错位，丢弃到帧尾之后重新同步
-            m_buffer.remove(0, tailIndex + kJustFloatTail.size());
+            // 数据区长度不是 4 的倍数：只丢弃 1 字节后重新查找帧尾，
+            // 避免单个噪声字节导致后续整帧一起丢失
+            m_buffer.remove(0, 1);
             continue;
         }
 

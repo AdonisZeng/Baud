@@ -430,6 +430,7 @@ FodyWeavers.xsd
 # Baud build outputs
 /x64/
 Baud/x64/
+/dist/
 
 # Trae/workspace metadata
 .trae/

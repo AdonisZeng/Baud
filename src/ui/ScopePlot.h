@@ -8,6 +8,7 @@
 #include "qcustomplot.h"
 
 #include <QColor>
+#include <QPoint>
 #include <QVector>
 
 class ChannelStore;
@@ -39,8 +40,10 @@ private:
 
     QVector<QCPGraph *> m_graphs;
     QCPItemText *m_hint = nullptr;
+    QPoint m_pressPosition;
     qint64 m_latestSample = -1;
     qint64 m_viewSpan = kDefaultViewSpan;
     bool m_followLatest = true;
+    bool m_autoY = true;
     bool m_paused = false;
 };

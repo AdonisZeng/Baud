@@ -31,6 +31,7 @@ public slots:
 signals:
     void opened();
     void closed();
+    void protocolApplied();
     void errorOccurred(const QString &message);
     void rawBytesReceived(const QByteArray &bytes);
     void framesReceived(const FrameBatch &frames);

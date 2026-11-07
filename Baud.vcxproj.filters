@@ -36,6 +36,9 @@
     <Filter Include="ThirdParty">
       <UniqueIdentifier>{F5C1B8E6-A07D-4E2F-B165-3A4C5D6E7F89}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Update">
+      <UniqueIdentifier>{A7D2C9F1-4B6E-4C8A-9D72-8E5F1B3C4A26}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <QtRcc Include="Baud.qrc">
@@ -44,6 +47,12 @@
     <QtUic Include="Baud.ui">
       <Filter>Form Files</Filter>
     </QtUic>
+    <ResourceCompile Include="Baud.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
+    <None Include="resources\Baud.ico">
+      <Filter>Resource Files</Filter>
+    </None>
     <QtMoc Include="Baud.h">
       <Filter>Header Files</Filter>
     </QtMoc>
@@ -52,6 +61,12 @@
     </QtMoc>
     <QtMoc Include="src\ui\ScopePlot.h">
       <Filter>UI</Filter>
+    </QtMoc>
+    <QtMoc Include="src\update\UpdateChecker.h">
+      <Filter>Update</Filter>
+    </QtMoc>
+    <QtMoc Include="src\update\UpdateDialog.h">
+      <Filter>Update</Filter>
     </QtMoc>
     <QtMoc Include="qcustomplot\qcustomplot.h">
       <Filter>ThirdParty</Filter>
@@ -83,6 +98,15 @@
     <ClCompile Include="src\ui\ScopePlot.cpp">
       <Filter>UI</Filter>
     </ClCompile>
+    <ClCompile Include="src\update\UpdateChecker.cpp">
+      <Filter>Update</Filter>
+    </ClCompile>
+    <ClCompile Include="src\update\UpdateDialog.cpp">
+      <Filter>Update</Filter>
+    </ClCompile>
+    <ClInclude Include="src\Version.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\protocol\ProtocolTypes.h">
       <Filter>Protocol</Filter>
     </ClInclude>

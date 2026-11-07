@@ -5,6 +5,8 @@
 
 #include <QString>
 
+#include <cmath>
+
 namespace {
 constexpr int kLineLimit = 4 * 1024;
 } // namespace
@@ -48,7 +50,8 @@ FrameBatch FireWaterParser::feed(const QByteArray &bytes)
         for (const QString &part : parts) {
             bool ok = false;
             const double value = part.trimmed().toDouble(&ok);
-            if (!ok) {
+            // toDouble 会把 nan / inf 视为合法数字，它们不能进入绘图数据
+            if (!ok || !std::isfinite(value)) {
                 valid = false;
                 break;
             }

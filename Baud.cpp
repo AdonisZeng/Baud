@@ -6,6 +6,10 @@
 #include "serial/SerialWorker.h"
 #include "ui/ScopePlot.h"
 #include "ui/Theme.h"
+#include "update/UpdateChecker.h"
+#include "update/UpdateDialog.h"
+
+#include <QApplication>
 
 #include <QAction>
 #include <QAbstractItemView>
@@ -115,12 +119,19 @@ void Baud::buildUi()
     connect(clearAction, &QAction::triggered, this, &Baud::onClearClicked);
 
     QMenu *helpMenu = menuBar()->addMenu(QStringLiteral("帮助"));
+    QAction *updateAction = helpMenu->addAction(QStringLiteral("检查更新"));
+    connect(updateAction, &QAction::triggered, this, [this]() {
+        checkForUpdates(false);
+    });
+    helpMenu->addSeparator();
     QAction *aboutAction = helpMenu->addAction(QStringLiteral("关于"));
     connect(aboutAction, &QAction::triggered, this, [this]() {
         QMessageBox::about(this, QStringLiteral("关于 Baud"),
                            QStringLiteral("Baud · VOFA 串口上位机\n"
+                                          "版本 %1\n"
                                           "支持 RawData / JustFloat / FireWater\n"
-                                          "波形渲染：QCustomPlot 2.1.1 (GPLv3)"));
+                                          "波形渲染：QCustomPlot 2.1.1 (GPLv3)")
+                               .arg(QApplication::applicationVersion()));
     });
 
     QWidget *central = ui.centralWidget;
@@ -154,11 +165,15 @@ void Baud::buildUi()
     m_baudCombo = new QComboBox(serialGroup);
     m_baudCombo->setEditable(true);
     m_baudCombo->setInsertPolicy(QComboBox::NoInsert);
-    const QStringList baudRates = {QStringLiteral("2000000"), QStringLiteral("921600"),
-                                   QStringLiteral("460800"),  QStringLiteral("230400"),
+    const QStringList baudRates = {QStringLiteral("3000000"), QStringLiteral("2500000"),
+                                   QStringLiteral("2000000"), QStringLiteral("1500000"),
+                                   QStringLiteral("1000000"), QStringLiteral("921600"),
+                                   QStringLiteral("500000"),  QStringLiteral("460800"),
+                                   QStringLiteral("256000"),  QStringLiteral("230400"),
                                    QStringLiteral("115200"),  QStringLiteral("57600"),
                                    QStringLiteral("38400"),   QStringLiteral("19200"),
-                                   QStringLiteral("9600")};
+                                   QStringLiteral("9600"),    QStringLiteral("4800"),
+                                   QStringLiteral("2400"),    QStringLiteral("1200")};
     m_baudCombo->addItems(baudRates);
     m_baudCombo->setCurrentText(QStringLiteral("2000000"));
 
@@ -377,6 +392,7 @@ void Baud::setupSerialThread()
     connect(this, &Baud::writeRequested, m_worker, &SerialWorker::writeBytes);
     connect(m_worker, &SerialWorker::opened, this, &Baud::onWorkerOpened);
     connect(m_worker, &SerialWorker::closed, this, &Baud::onWorkerClosed);
+    connect(m_worker, &SerialWorker::protocolApplied, this, &Baud::onWorkerProtocolApplied);
     connect(m_worker, &SerialWorker::errorOccurred, this, &Baud::onWorkerError);
     connect(m_worker, &SerialWorker::rawBytesReceived, this, &Baud::onRawBytesReceived);
     connect(m_worker, &SerialWorker::framesReceived, this, &Baud::onFramesReceived);
@@ -406,6 +422,31 @@ void Baud::setupTimers()
     m_uiTimer->start();
     m_rateTimer->start();
     m_portTimer->start();
+
+    if (UpdateChecker::shouldAutoCheck()) {
+        QTimer::singleShot(8000, this, [this]() {
+            checkForUpdates(true);
+        });
+    }
+}
+
+void Baud::checkForUpdates(bool automatic)
+{
+    if (automatic && (!UpdateChecker::shouldAutoCheck()
+                      || (m_updateDialog && m_updateDialog->isVisible())))
+        return;
+
+    if (!m_updateChecker) {
+        m_updateChecker = new UpdateChecker(this);
+        m_updateDialog = new UpdateDialog(m_updateChecker, this);
+        connect(m_updateDialog, &UpdateDialog::installLaunched,
+                this, []() { QApplication::closeAllWindows(); });
+    }
+
+    if (m_updateChecker->isBusy())
+        return;
+
+    m_updateDialog->startCheck(automatic);
 }
 
 void Baud::refreshPorts()
@@ -558,13 +599,23 @@ void Baud::onProtocolChanged(int index)
     Q_UNUSED(index);
 
     const ProtocolMode mode = currentProtocol();
-    if (m_connected)
+    // 切换协议时先暂停接收，等 worker 回执后再恢复，
+    // 避免旧协议已排队的批次被新会话接收
+    m_acceptData = false;
+    if (m_worker)
         emit protocolChangeRequested(mode);
+    else
+        m_acceptData = true;
 
     resetSession();
     updateConnectionUi();
     statusBar()->showMessage(
         QStringLiteral("已切换协议：%1").arg(protocolDisplayName(mode)), 3000);
+}
+
+void Baud::onWorkerProtocolApplied()
+{
+    m_acceptData = true;
 }
 
 void Baud::onRefreshPortsClicked()
@@ -582,6 +633,7 @@ void Baud::onWorkerOpened()
     if (m_shuttingDown)
         return;
 
+    m_acceptData = true;
     m_connected = true;
     m_connecting = false;
     updateConnectionUi();
@@ -590,6 +642,7 @@ void Baud::onWorkerOpened()
 
 void Baud::onWorkerClosed()
 {
+    m_acceptData = true;
     m_connected = false;
     m_connecting = false;
     m_paused = false;
@@ -622,6 +675,9 @@ void Baud::onWorkerError(const QString &message)
 
 void Baud::onRawBytesReceived(const QByteArray &bytes)
 {
+    if (!m_acceptData)
+        return;
+
     m_rxBytes += bytes.size();
     if (currentProtocol() == ProtocolMode::RawData)
         appendRawData(bytes);
@@ -629,7 +685,7 @@ void Baud::onRawBytesReceived(const QByteArray &bytes)
 
 void Baud::onFramesReceived(const FrameBatch &frames)
 {
-    if (frames.isEmpty())
+    if (!m_acceptData || frames.isEmpty())
         return;
 
     const qint64 firstSampleIndex = m_store.sampleCount();
@@ -705,7 +761,6 @@ void Baud::onSendClicked()
     }
 
     emit writeRequested(data);
-    m_txBytes += data.size();
     statusBar()->showMessage(QStringLiteral("已发送 %1 字节").arg(data.size()), 3000);
 }
 
@@ -845,7 +900,6 @@ void Baud::resetSession()
         m_scope->setPaused(false);
 
     m_rxBytes = 0;
-    m_txBytes = 0;
     m_acceptedFrames = 0;
     m_lastRxBytes = 0;
     m_lastFrames = 0;

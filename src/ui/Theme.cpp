@@ -161,9 +161,29 @@ QHeaderView::section {
 QPlainTextEdit {
     background: #10151A;
     color: #C8D2DC;
+    font-family: "Consolas";
+    font-size: 9pt;
     border: 1px solid #2A313A;
     border-radius: 6px;
     selection-background-color: #2F6FED;
+}
+QTextBrowser {
+    background: #12161A;
+    color: #C8D2DC;
+    border: 1px solid #2A313A;
+    border-radius: 6px;
+}
+QProgressBar {
+    background: #171C22;
+    border: 1px solid #343C47;
+    border-radius: 6px;
+    min-height: 18px;
+    text-align: center;
+    color: #C8D2DC;
+}
+QProgressBar::chunk {
+    background: #2F6FED;
+    border-radius: 5px;
 }
 QScrollBar:vertical {
     background: #171C22;
