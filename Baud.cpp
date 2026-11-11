@@ -34,6 +34,7 @@
 #include <QScreen>
 #include <QSerialPortInfo>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
@@ -285,8 +286,54 @@ void Baud::buildUi()
     rightLayout->setSpacing(8);
 
     m_stack = new QStackedWidget(right);
-    m_scope = new ScopePlot(m_stack);
-    m_stack->addWidget(m_scope);
+
+    QWidget *scopePage = new QWidget(m_stack);
+    QVBoxLayout *scopeLayout = new QVBoxLayout(scopePage);
+    scopeLayout->setContentsMargins(0, 0, 0, 0);
+    scopeLayout->setSpacing(6);
+
+    QWidget *scopeBar = new QWidget(scopePage);
+    QHBoxLayout *scopeBarLayout = new QHBoxLayout(scopeBar);
+    scopeBarLayout->setContentsMargins(2, 0, 2, 0);
+    scopeBarLayout->setSpacing(8);
+    scopeBarLayout->addWidget(new QLabel(QStringLiteral("缓冲区上限(点)"), scopeBar));
+    m_viewSpanSpin = new QSpinBox(scopeBar);
+    m_viewSpanSpin->setRange(static_cast<int>(ScopePlot::kMinViewSpan),
+                             static_cast<int>(ScopePlot::kMaxViewSpan));
+    m_viewSpanSpin->setSingleStep(1000);
+    m_viewSpanSpin->setValue(static_cast<int>(ScopePlot::kDefaultViewSpan));
+    m_viewSpanSpin->setToolTip(QStringLiteral(
+        "X 轴默认窗口长度，也决定红色起始线与紫色结束线之间的数据范围；"
+        "底层环形缓冲固定为 200000 点/通道"));
+    scopeBarLayout->addWidget(m_viewSpanSpin);
+    m_followButton = new QPushButton(QStringLiteral("跟随最新"), scopeBar);
+    m_followButton->setCheckable(true);
+    m_followButton->setChecked(true);
+    m_followButton->setToolTip(QStringLiteral("跟随最新并自动缩放 Y 轴"));
+    scopeBarLayout->addWidget(m_followButton);
+    m_clearMarkersButton = new QPushButton(QStringLiteral("清除游标"), scopeBar);
+    scopeBarLayout->addWidget(m_clearMarkersButton);
+    QLabel *scopeHint = new QLabel(
+        QStringLiteral("轴带滚轮单轴缩放 · 绘图区 XY 同缩 · 双击固定/移除竖线"
+                       " · 左键选 A / Shift+左键选 B · 右键更多"),
+        scopeBar);
+    scopeHint->setWordWrap(true);
+    scopeHint->setStyleSheet(QStringLiteral("color: #7E8DA0;"));
+    scopeBarLayout->addWidget(scopeHint, 1);
+    scopeLayout->addWidget(scopeBar);
+
+    m_scope = new ScopePlot(scopePage);
+    m_scope->setStore(&m_store);
+    scopeLayout->addWidget(m_scope, 1);
+
+    m_measureLabel = new QLabel(
+        QStringLiteral("测量区间：A 起始线 → B 结束线（等待数据）"), scopePage);
+    m_measureLabel->setWordWrap(true);
+    m_measureLabel->setMinimumHeight(34);
+    m_measureLabel->setFont(QFont(QStringLiteral("Consolas"), 9));
+    m_measureLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    scopeLayout->addWidget(m_measureLabel);
+    m_stack->addWidget(scopePage);
 
     QWidget *rawPage = new QWidget(m_stack);
     QVBoxLayout *rawLayout = new QVBoxLayout(rawPage);
@@ -358,6 +405,30 @@ void Baud::buildUi()
             this, &Baud::onProtocolChanged);
     connect(m_pauseButton, &QPushButton::clicked, this, &Baud::onPauseClicked);
     connect(m_clearButton, &QPushButton::clicked, this, &Baud::onClearClicked);
+    connect(m_viewSpanSpin, &QSpinBox::valueChanged, this, [this](int value) {
+        if (m_scope)
+            m_scope->setViewSpan(value);
+    });
+    connect(m_scope, &ScopePlot::viewSpanChanged, this, [this](qint64 span) {
+        QSignalBlocker blocker(m_viewSpanSpin);
+        m_viewSpanSpin->setValue(static_cast<int>(span));
+    });
+    connect(m_scope, &ScopePlot::followLatestChanged, this, [this](bool follow) {
+        QSignalBlocker blocker(m_followButton);
+        m_followButton->setChecked(follow);
+    });
+    connect(m_followButton, &QPushButton::toggled, this, [this](bool checked) {
+        if (!m_scope)
+            return;
+        if (checked)
+            m_scope->resetView();
+        else
+            m_scope->setFollowLatest(false);
+    });
+    connect(m_clearMarkersButton, &QPushButton::clicked,
+            m_scope, &ScopePlot::clearMarkers);
+    connect(m_scope, &ScopePlot::measurementChanged,
+            m_measureLabel, &QLabel::setText);
     connect(m_sendButton, &QPushButton::clicked, this, &Baud::onSendClicked);
     connect(m_sendEdit, &QLineEdit::returnPressed, this, &Baud::onSendClicked);
     connect(m_rawModeCombo, &QComboBox::currentIndexChanged,

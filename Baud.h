@@ -16,6 +16,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QSpinBox;
 class QStackedWidget;
 class QTableWidget;
 class QThread;
@@ -85,6 +86,10 @@ private:
     ChannelStore m_store;
     ScopePlot *m_scope = nullptr;
     QStackedWidget *m_stack = nullptr;
+    QSpinBox *m_viewSpanSpin = nullptr;
+    QPushButton *m_followButton = nullptr;
+    QPushButton *m_clearMarkersButton = nullptr;
+    QLabel *m_measureLabel = nullptr;
 
     QComboBox *m_portCombo = nullptr;
     QComboBox *m_baudCombo = nullptr;
