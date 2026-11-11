@@ -303,8 +303,8 @@ void Baud::buildUi()
     m_viewSpanSpin->setSingleStep(1000);
     m_viewSpanSpin->setValue(static_cast<int>(ScopePlot::kDefaultViewSpan));
     m_viewSpanSpin->setToolTip(QStringLiteral(
-        "X 轴默认窗口长度，也决定红色起始线与紫色结束线之间的数据范围；"
-        "底层环形缓冲固定为 200000 点/通道"));
+        "X 轴默认窗口长度，也决定默认 A/B 测量游标的间距；游标只用于测量，"
+        "不会裁剪波形。底层环形缓冲固定为 200000 点/通道"));
     scopeBarLayout->addWidget(m_viewSpanSpin);
     m_followButton = new QPushButton(QStringLiteral("跟随最新"), scopeBar);
     m_followButton->setCheckable(true);
@@ -315,7 +315,7 @@ void Baud::buildUi()
     scopeBarLayout->addWidget(m_clearMarkersButton);
     QLabel *scopeHint = new QLabel(
         QStringLiteral("轴带滚轮单轴缩放 · 绘图区 XY 同缩 · 双击固定/移除竖线"
-                       " · 左键选 A / Shift+左键选 B · 右键更多"),
+                       " · 左键选 A / Shift+左键选 B · A/B 不裁剪波形 · 右键更多"),
         scopeBar);
     scopeHint->setWordWrap(true);
     scopeHint->setStyleSheet(QStringLiteral("color: #7E8DA0;"));
@@ -327,7 +327,8 @@ void Baud::buildUi()
     scopeLayout->addWidget(m_scope, 1);
 
     m_measureLabel = new QLabel(
-        QStringLiteral("测量区间：A 起始线 → B 结束线（等待数据）"), scopePage);
+        QStringLiteral("测量游标：默认 A 窗口起点 → B 最新点（不裁剪波形，等待数据）"),
+        scopePage);
     m_measureLabel->setWordWrap(true);
     m_measureLabel->setMinimumHeight(34);
     m_measureLabel->setFont(QFont(QStringLiteral("Consolas"), 9));
@@ -391,6 +392,9 @@ void Baud::buildUi()
     m_statusState->setMinimumWidth(250);
     m_statusRxRate = new QLabel(this);
     m_statusFrameRate = new QLabel(this);
+    m_statusFrameRate->setToolTip(QStringLiteral(
+        "接收帧率由串口数据决定；绘制耗时为波形最近平均重绘耗时，"
+        "界面刷新目标约 60 fps"));
     m_statusSamples = new QLabel(this);
     m_statusChannels = new QLabel(this);
     statusBar()->addWidget(m_statusState, 1);
@@ -472,7 +476,8 @@ void Baud::setupSerialThread()
 void Baud::setupTimers()
 {
     m_renderTimer = new QTimer(this);
-    m_renderTimer->setInterval(33);
+    m_renderTimer->setInterval(16);
+    m_renderTimer->setTimerType(Qt::PreciseTimer);
     connect(m_renderTimer, &QTimer::timeout, this, &Baud::onRenderTimer);
 
     m_uiTimer = new QTimer(this);
@@ -645,6 +650,7 @@ void Baud::onPauseClicked()
     m_scope->setPaused(m_paused);
 
     if (!m_paused) {
+        m_plotDirty = false;
         m_scope->rebuildFromStore(m_store);
         m_scope->setFollowLatest(true);
     }
@@ -750,20 +756,26 @@ void Baud::onFramesReceived(const FrameBatch &frames)
     if (!m_acceptData || frames.isEmpty())
         return;
 
-    const qint64 firstSampleIndex = m_store.sampleCount();
     const FrameBatch accepted = m_store.appendFrames(frames);
     if (accepted.isEmpty())
         return;
 
+    // 校准通道数时 ChannelStore 可能丢弃残帧并从零重新编号
+    const qint64 firstSampleIndex = m_store.sampleCount() - accepted.size();
     const int channelCount = m_store.channelCount();
     if (channelCount != m_lastChannelCount) {
         m_scope->setChannelCount(channelCount);
         rebuildChannelTable(channelCount);
         m_lastChannelCount = channelCount;
+    } else if (firstSampleIndex == 0 && m_store.sampleCount() == accepted.size()) {
+        // 校准过程中可能绕了一圈又回到相同通道数，此时图形也须从零重建
+        m_scope->clearData();
     }
 
-    if (!m_paused)
+    if (!m_paused) {
         m_scope->appendFrames(accepted, firstSampleIndex);
+        m_plotDirty = true;
+    }
 
     m_acceptedFrames += accepted.size();
 }
@@ -786,8 +798,10 @@ void Baud::onRateTimer()
 
 void Baud::onRenderTimer()
 {
-    if (m_connected && !m_paused)
+    if (m_connected && !m_paused && m_plotDirty) {
+        m_plotDirty = false;
         m_scope->refresh();
+    }
 }
 
 void Baud::onSendClicked()
@@ -845,7 +859,12 @@ void Baud::onSendModeChanged(int index)
 void Baud::updateStatus()
 {
     m_statusRxRate->setText(QStringLiteral("接收: %1 B/s").arg(m_rxRate));
-    m_statusFrameRate->setText(QStringLiteral("帧率: %1 fps").arg(m_frameRate));
+    const QString replotMs = m_scope
+                                 ? QString::number(m_scope->replotTime(true), 'f', 1)
+                                 : QStringLiteral("0.0");
+    m_statusFrameRate->setText(QStringLiteral("接收帧率: %1 fps · 绘制: %2 ms")
+                                   .arg(m_frameRate)
+                                   .arg(replotMs));
     m_statusSamples->setText(QStringLiteral("样本: %1").arg(m_store.sampleCount()));
     m_statusChannels->setText(QStringLiteral("通道: %1").arg(m_store.channelCount()));
 }
@@ -952,6 +971,7 @@ void Baud::resetSession()
     }
     m_channelTable->setRowCount(0);
     m_lastChannelCount = 0;
+    m_plotDirty = false;
     m_rawMonitor->clear();
     m_hexColumn = 0;
 

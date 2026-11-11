@@ -25,23 +25,31 @@ FrameBatch ChannelStore::appendFrames(const FrameBatch &frames)
 {
     FrameBatch accepted;
 
-    if (m_channelCount == 0) {
-        // 首帧决定通道数；忽略噪声帧和超限帧
-        for (const Frame &frame : frames) {
-            const int count = frame.values.size();
-            if (count > 0 && count <= kMaxChannels) {
-                m_channelCount = count;
-                ensureBuffers();
-                break;
-            }
-        }
-        if (m_channelCount == 0)
-            return accepted;
-    }
-
     for (const Frame &frame : frames) {
-        if (frame.values.size() != m_channelCount)
+        const int count = frame.values.size();
+        if (count <= 0 || count > kMaxChannels)
             continue;
+
+        if (m_channelCount == 0) {
+            m_channelCount = count;
+            m_matchingChannelFrames = 0;
+            ensureBuffers();
+        } else if (count != m_channelCount) {
+            if (m_matchingChannelFrames >= kChannelLockThreshold)
+                continue;
+
+            // 打开串口时可能正好处在一帧中间。通道数尚未稳定时，允许后续
+            // 完整帧重新校准，避免首个残帧导致正确数据一直被整帧丢弃。
+            m_channelCount = count;
+            m_matchingChannelFrames = 0;
+            m_sampleCount = 0;
+            m_data.clear();
+            accepted.clear();
+            ensureBuffers();
+        }
+
+        if (m_matchingChannelFrames < kChannelLockThreshold)
+            ++m_matchingChannelFrames;
 
         const qint64 slot = m_sampleCount % kCapacity;
         for (int channel = 0; channel < m_channelCount; ++channel)
@@ -57,6 +65,7 @@ FrameBatch ChannelStore::appendFrames(const FrameBatch &frames)
 void ChannelStore::clear()
 {
     m_channelCount = 0;
+    m_matchingChannelFrames = 0;
     m_sampleCount = 0;
     m_data.clear();
 }

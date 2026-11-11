@@ -43,6 +43,8 @@ void ScopePlot::setupStyle()
     setBackground(QBrush(QColor("#0F1419")));
     axisRect()->setBackground(QBrush(QColor("#121820")));
     setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+    setPlottingHint(QCP::phFastPolylines, true);
+    setNotAntialiasedElements(QCP::aePlottables);
     axisRect()->setRangeDrag(Qt::Horizontal | Qt::Vertical);
     axisRect()->setRangeZoom(Qt::Horizontal | Qt::Vertical);
     axisRect()->setRangeZoomFactor(0.85);
@@ -51,7 +53,7 @@ void ScopePlot::setupStyle()
     setToolTip(QStringLiteral(
         "绘图区滚轮：同时缩放 X/Y；X 轴带滚轮：只缩放 X；Y 轴带滚轮：只缩放 Y\n"
         "X 轴带 / 绘图区双击：固定竖线；双击已有竖线：移除；Y 轴带双击：复位视图\n"
-        "左键点竖线设为 A，Shift+左键设为 B；右键菜单更多"));
+        "左键点竖线设为 A，Shift+左键设为 B；A/B 是测量游标，不裁剪波形；右键菜单更多"));
 
     xAxis->setLabel(QStringLiteral("样本"));
     yAxis->setLabel(QStringLiteral("数值"));
@@ -103,8 +105,9 @@ void ScopePlot::setChannelCount(int count)
     for (int channel = 0; channel < count; ++channel) {
         QCPGraph *graph = addGraph();
         graph->setName(QStringLiteral("CH%1").arg(channel + 1));
-        graph->setPen(QPen(Theme::channelColor(channel), 1.5));
+        graph->setPen(QPen(Theme::channelColor(channel), 1.0));
         graph->setLineStyle(QCPGraph::lsLine);
+        graph->setAntialiased(false);
         graph->setScatterStyle(QCPScatterStyle::ssNone);
         graph->setAdaptiveSampling(true);
         m_graphs.append(graph);
@@ -127,15 +130,14 @@ void ScopePlot::appendFrames(const FrameBatch &frames, qint64 firstSampleIndex)
         return;
 
     const int frameCount = frames.size();
-    QVector<double> keys(frameCount);
-    for (int i = 0; i < frameCount; ++i)
-        keys[i] = static_cast<double>(firstSampleIndex + i);
-
+    QVector<QCPGraphData> points(frameCount);
     for (int channel = 0; channel < m_graphs.size(); ++channel) {
-        QVector<double> values(frameCount);
-        for (int i = 0; i < frameCount; ++i)
-            values[i] = frames.at(i).values.at(channel);
-        m_graphs.at(channel)->addData(keys, values, true);
+        for (int i = 0; i < frameCount; ++i) {
+            points[i].key = static_cast<double>(firstSampleIndex + i);
+            points[i].value = frames.at(i).values.at(channel);
+        }
+        // 直接构造 QCPGraphData，省去 keys/values 到内部数据结构的二次拷贝
+        m_graphs.at(channel)->data()->add(points, true);
     }
 
     m_latestSample = firstSampleIndex + frameCount - 1;
@@ -680,7 +682,8 @@ void ScopePlot::updateMeasurement()
     QString text;
 
     if (m_latestSample < 0 || !std::isfinite(fromX) || !std::isfinite(toX)) {
-        text = QStringLiteral("测量区间：A 起始线 → B 结束线（等待数据）");
+        text = QStringLiteral(
+            "测量游标：默认 A 窗口起点 → B 最新点（不裁剪波形，等待数据）");
     } else {
         const double lower = std::min(fromX, toX);
         const double upper = std::max(fromX, toX);

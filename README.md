@@ -27,7 +27,7 @@ Baud is a Windows serial-port host application for devices that send data with t
 | FireWater | One CSV line per frame, ended by `\n` | `\r\n` is accepted. Empty lines and lines with invalid numbers are discarded. |
 | RawData | Raw byte stream | No frame parsing; displayed as ASCII or HEX. |
 
-The channel count is locked by the first valid frame (1–64 channels). Later frames with a different channel count are dropped.
+The channel count (1–64) is recalibrated when early frames disagree, so opening a port mid-frame does not corrupt the session. After four consecutive matching frames it is locked, and later frames with a different channel count are dropped.
 
 Protocol reference: [VOFA-Protocol-Driver](https://github.com/skjnsnb/VOFA-Protocol-Driver) (MIT). No source code from that project is included here.
 
@@ -130,7 +130,7 @@ Baud 是一款 Windows 串口上位机，用于接收、解析并实时绘制采
 | FireWater | 每行 CSV，以 `\n` 结束 | 支持 `\r\n`；空行和非法数值行会被丢弃。 |
 | RawData | 原始字节流 | 不做帧解析，仅按 ASCII/HEX 显示。 |
 
-通道数由首个有效帧锁定（1–64 通道），之后通道数不匹配的帧会被整帧丢弃。
+启动初期若通道数不一致会自动按后续完整帧校准（1–64 通道），以兼容中途打开串口；连续 4 帧一致后锁定通道数，之后通道数不匹配的帧会被整帧丢弃。
 
 协议参考：[VOFA-Protocol-Driver](https://github.com/skjnsnb/VOFA-Protocol-Driver)（MIT）。本仓库未复制其源码。
 

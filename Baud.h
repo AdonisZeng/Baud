@@ -132,6 +132,7 @@ private:
     bool m_paused = false;
     bool m_shuttingDown = false;
     bool m_acceptData = true;
+    bool m_plotDirty = false;
     int m_lastChannelCount = 0;
     int m_hexColumn = 0;
 

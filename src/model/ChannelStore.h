@@ -7,10 +7,11 @@
 
 #include <QVector>
 
-// GUI 线程内的通道环形缓冲；首帧锁定通道数
+// GUI 线程内的通道环形缓冲；启动初期自动校准通道数，稳定后锁定
 class ChannelStore {
 public:
     static constexpr int kMaxChannels = 64;
+    static constexpr int kChannelLockThreshold = 4;
     static constexpr qint64 kCapacity = 200000;
 
     FrameBatch appendFrames(const FrameBatch &frames);
@@ -29,6 +30,7 @@ private:
     void ensureBuffers();
 
     int m_channelCount = 0;
+    int m_matchingChannelFrames = 0;
     qint64 m_sampleCount = 0;
     QVector<QVector<double>> m_data;
 };
