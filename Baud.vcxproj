@@ -140,8 +140,6 @@ if exist "$(ProjectDir)LICENSES\LGPL-3.0.txt" copy /Y "$(ProjectDir)LICENSES\LGP
     <ClCompile Include="src\update\UpdateChecker.cpp"/>
     <ClCompile Include="src\update\UpdateDialog.cpp"/>
     <ClInclude Include="src\Version.h"/>
-    <ClInclude Include="src\io\CsvExporter.h"/>
-    <ClInclude Include="src\io\CsvImporter.h"/>
     <ClInclude Include="src\serial\FrameTimestamper.h"/>
     <ClInclude Include="src\ui\TimeFormat.h"/>
 

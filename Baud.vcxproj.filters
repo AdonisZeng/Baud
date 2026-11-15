@@ -149,12 +149,6 @@
     <ClInclude Include="src\model\ChannelStore.h">
       <Filter>Model</Filter>
     </ClInclude>
-    <ClInclude Include="src\io\CsvExporter.h">
-      <Filter>IO</Filter>
-    </ClInclude>
-    <ClInclude Include="src\io\CsvImporter.h">
-      <Filter>IO</Filter>
-    </ClInclude>
     <ClInclude Include="src\ui\TimeFormat.h">
       <Filter>UI</Filter>
     </ClInclude>
