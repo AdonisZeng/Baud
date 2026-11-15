@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <QByteArray>
 #include <QMetaType>
 #include <QVector>
 
@@ -16,6 +15,11 @@ enum class ProtocolMode {
 
 // 一帧解析后的通道数据（统一用 double，兼容 FireWater 的文本数值）
 struct Frame {
+    // 该帧的时间轴坐标（秒）。由 SerialWorker 在串口线程内打点：
+    // 串口是成批交付的，批内真实到达时刻不可知，因此以“批到达时刻”为锚，
+    // 批内各帧按实测采样周期等距展开，既保证严格单调递增（绘图必需），
+    // 又让相邻帧间隔等于真实周期。
+    double t = 0.0;
     QVector<double> values;
 };
 

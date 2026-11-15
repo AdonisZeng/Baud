@@ -8,6 +8,12 @@
 #include <QSerialPort>
 #include <QTimer>
 
+namespace {
+// 周期/抖动上报节流（毫秒）：串口批次可能非常密集，
+// 每个批次都发 timingUpdated 会把 GUI 线程淹没（每批都刷一次状态栏）。
+constexpr int kTimingReportIntervalMs = 200;
+} // namespace
+
 SerialWorker::SerialWorker(QObject *parent)
     : QObject(parent)
 {
@@ -53,6 +59,11 @@ void SerialWorker::openPort(const SerialSettings &settings, ProtocolMode mode)
 
     m_open = true;
     m_flushTimer->start();
+    // 时钟从本次连接开始计时，帧时间戳即“连接后多少秒”
+    m_clock.restart();
+    m_timestamper.reset();
+    m_lastTimingReportTime = 0.0;
+    m_timingReported = false;
     emit opened();
 }
 
@@ -115,6 +126,9 @@ void SerialWorker::onReadyRead()
     if (chunk.isEmpty())
         return;
 
+    // 本批数据的到达时刻（单调时钟，秒）
+    const double chunkTime = m_clock.elapsed();
+
     m_pendingRaw.append(chunk);
     if (m_pendingRaw.size() > kRawPendingLimit)
         m_pendingRaw = m_pendingRaw.right(kRawPendingLimit);
@@ -124,10 +138,28 @@ void SerialWorker::onReadyRead()
 
     FrameBatch frames = m_parser->feed(chunk);
     if (!frames.isEmpty()) {
+        const bool timingChanged = m_timestamper.onChunk(chunkTime, frames.size());
+        m_timestamper.stamp(frames, chunkTime);
+        if (timingChanged && shouldReportTiming(chunkTime))
+            emit timingUpdated(m_timestamper.period(), m_timestamper.jitter());
         m_pendingFrames += frames;
         if (m_pendingFrames.size() > kPendingFrameLimit)
             flushPending();
     }
+}
+
+bool SerialWorker::shouldReportTiming(double now)
+{
+    if (!m_timingReported) {
+        m_timingReported = true;
+        m_lastTimingReportTime = now;
+        return true;
+    }
+    if ((now - m_lastTimingReportTime) * 1000.0 < kTimingReportIntervalMs)
+        return false;
+
+    m_lastTimingReportTime = now;
+    return true;
 }
 
 void SerialWorker::flushPending()

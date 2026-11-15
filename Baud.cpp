@@ -3,9 +3,12 @@
 
 #include "Baud.h"
 
+#include "io/CsvExporter.h"
+#include "io/CsvImporter.h"
 #include "serial/SerialWorker.h"
 #include "ui/ScopePlot.h"
 #include "ui/Theme.h"
+#include "ui/TimeFormat.h"
 #include "update/UpdateChecker.h"
 #include "update/UpdateDialog.h"
 
@@ -15,6 +18,8 @@
 #include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDateTime>
+#include <QFileDialog>
 #include <QFont>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -86,6 +91,7 @@ Baud::Baud(QWidget *parent)
 Baud::~Baud()
 {
     stopSerialThread();
+    stopIoThreads();
 }
 
 void Baud::buildUi()
@@ -105,6 +111,13 @@ void Baud::buildUi()
     ui.mainToolBar->hide();
 
     QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("文件"));
+    QAction *exportAction = fileMenu->addAction(QStringLiteral("导出 CSV…"));
+    exportAction->setToolTip(QStringLiteral("把当前缓冲区的数据导出为 CSV 文件"));
+    connect(exportAction, &QAction::triggered, this, &Baud::onExportCsv);
+    QAction *importAction = fileMenu->addAction(QStringLiteral("导入 CSV…"));
+    importAction->setToolTip(QStringLiteral("读取 CSV 文件并按时间轴回放波形"));
+    connect(importAction, &QAction::triggered, this, &Baud::onImportCsv);
+    fileMenu->addSeparator();
     QAction *quitAction = fileMenu->addAction(QStringLiteral("退出"));
     connect(quitAction, &QAction::triggered, this, &QWidget::close);
 
@@ -296,15 +309,15 @@ void Baud::buildUi()
     QHBoxLayout *scopeBarLayout = new QHBoxLayout(scopeBar);
     scopeBarLayout->setContentsMargins(2, 0, 2, 0);
     scopeBarLayout->setSpacing(8);
-    scopeBarLayout->addWidget(new QLabel(QStringLiteral("缓冲区上限(点)"), scopeBar));
+    scopeBarLayout->addWidget(new QLabel(QStringLiteral("时间窗口(ms)"), scopeBar));
     m_viewSpanSpin = new QSpinBox(scopeBar);
-    m_viewSpanSpin->setRange(static_cast<int>(ScopePlot::kMinViewSpan),
-                             static_cast<int>(ScopePlot::kMaxViewSpan));
-    m_viewSpanSpin->setSingleStep(1000);
-    m_viewSpanSpin->setValue(static_cast<int>(ScopePlot::kDefaultViewSpan));
+    m_viewSpanSpin->setRange(static_cast<int>(ScopePlot::kMinViewSpanMs),
+                             static_cast<int>(ScopePlot::kMaxViewSpanMs));
+    m_viewSpanSpin->setSingleStep(100);
+    m_viewSpanSpin->setValue(static_cast<int>(ScopePlot::kDefaultViewSpanMs));
     m_viewSpanSpin->setToolTip(QStringLiteral(
-        "X 轴默认窗口长度，也决定默认 A/B 测量游标的间距；游标只用于测量，"
-        "不会裁剪波形。底层环形缓冲固定为 200000 点/通道"));
+        "X 轴显示的时间窗口长度。窗口跟随最新数据自动滚动，"
+        "滚轮缩放后可手动查看历史。底层环形缓冲固定为 200000 点/通道"));
     scopeBarLayout->addWidget(m_viewSpanSpin);
     m_followButton = new QPushButton(QStringLiteral("跟随最新"), scopeBar);
     m_followButton->setCheckable(true);
@@ -397,9 +410,14 @@ void Baud::buildUi()
         "界面刷新目标约 60 fps"));
     m_statusSamples = new QLabel(this);
     m_statusChannels = new QLabel(this);
+    m_statusTiming = new QLabel(this);
+    m_statusTiming->setToolTip(QStringLiteral(
+        "由接收节奏自动推算的采样周期与抖动，无需手工填写 Δt；"
+        "它是上位机侧的估计值，不等于下位机内部定时器周期"));
     statusBar()->addWidget(m_statusState, 1);
     statusBar()->addPermanentWidget(m_statusRxRate);
     statusBar()->addPermanentWidget(m_statusFrameRate);
+    statusBar()->addPermanentWidget(m_statusTiming);
     statusBar()->addPermanentWidget(m_statusSamples);
     statusBar()->addPermanentWidget(m_statusChannels);
 
@@ -469,6 +487,7 @@ void Baud::setupSerialThread()
     connect(m_worker, &SerialWorker::errorOccurred, this, &Baud::onWorkerError);
     connect(m_worker, &SerialWorker::rawBytesReceived, this, &Baud::onRawBytesReceived);
     connect(m_worker, &SerialWorker::framesReceived, this, &Baud::onFramesReceived);
+    connect(m_worker, &SerialWorker::timingUpdated, this, &Baud::onTimingUpdated);
 
     m_serialThread->start();
 }
@@ -756,6 +775,11 @@ void Baud::onFramesReceived(const FrameBatch &frames)
     if (!m_acceptData || frames.isEmpty())
         return;
 
+    // 导出期间冻结接收，保证导出区间对应的缓冲数据不被新数据覆盖；
+    // 导入期间丢弃串口帧，避免与导入帧混进同一份缓冲。
+    if (m_exporting || m_importing)
+        return;
+
     const FrameBatch accepted = m_store.appendFrames(frames);
     if (accepted.isEmpty())
         return;
@@ -780,6 +804,13 @@ void Baud::onFramesReceived(const FrameBatch &frames)
     m_acceptedFrames += accepted.size();
 }
 
+void Baud::onTimingUpdated(double period, double jitter)
+{
+    m_measuredPeriod = period;
+    m_measuredJitter = jitter;
+    updateStatus();
+}
+
 void Baud::onUiTimer()
 {
     if (m_store.channelCount() > 0)
@@ -798,7 +829,8 @@ void Baud::onRateTimer()
 
 void Baud::onRenderTimer()
 {
-    if (m_connected && !m_paused && m_plotDirty) {
+    // 导入期间串口是断开的，但导入的数据同样要实时画出来
+    if ((m_connected || m_importing) && !m_paused && m_plotDirty) {
         m_plotDirty = false;
         m_scope->refresh();
     }
@@ -856,6 +888,210 @@ void Baud::onSendModeChanged(int index)
         m_sendEdit->setPlaceholderText(QStringLiteral("输入要发送的 ASCII 文本"));
 }
 
+void Baud::onExportCsv()
+{
+    if (m_exportThread) {
+        statusBar()->showMessage(QStringLiteral("正在导出，请稍候…"), 3000);
+        return;
+    }
+    if (m_importThread) {
+        statusBar()->showMessage(QStringLiteral("正在导入，请稍候…"), 3000);
+        return;
+    }
+    if (m_store.channelCount() <= 0 || m_store.sampleCount() <= 0) {
+        QMessageBox::information(this, QStringLiteral("导出 CSV"),
+                                 QStringLiteral("当前没有可导出的数据。"));
+        return;
+    }
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("导出 CSV"),
+        QStringLiteral("Baud_%1.csv")
+            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))),
+        QStringLiteral("CSV 文件 (*.csv)"));
+    if (path.isEmpty())
+        return;
+
+    m_exportThread = new QThread(this);
+    m_exporter = new CsvExporter;
+    m_exporter->moveToThread(m_exportThread);
+    connect(m_exportThread, &QThread::finished, m_exporter, &QObject::deleteLater);
+
+    connect(m_exporter, &CsvExporter::needMore, this, &Baud::onExportNeedMore);
+    connect(m_exporter, &CsvExporter::finished, this, &Baud::onExportFinished);
+
+    // 导出区间在开始时就固定下来：导出期间冻结接收，
+    // 否则环形缓冲回绕会把已导出的区间覆盖掉，导致时间列回退、行数对不上。
+    m_exportFrom = m_store.firstStoredIndex();
+    m_exportTo = m_store.sampleCount() - 1;
+    m_exportCursor = m_exportFrom;
+    m_exporting = true;
+    statusBar()->showMessage(QStringLiteral("正在导出 CSV（导出期间暂停接收）…"), 0);
+
+    // 元数据头：与导入端约定一致，便于回读时还原语义
+    QStringList meta;
+    meta << QStringLiteral("# Baud Export v1");
+    meta << QStringLiteral("# created=%1")
+                .arg(QDateTime::currentDateTime().toString(Qt::ISODate));
+    meta << QStringLiteral("# protocol=%1").arg(protocolDisplayName(currentProtocol()));
+    meta << QStringLiteral("# time_base=pc_arrival");
+    meta << QStringLiteral("# sample_rate=%1").arg(
+        m_store.estimatedPeriod() > 0.0 ? QString::number(1.0 / m_store.estimatedPeriod(), 'f', 3)
+                                         : QStringLiteral("0"));
+    meta << QStringLiteral("# dt_auto=%1").arg(
+        m_store.estimatedPeriod() > 0.0 ? QString::number(m_store.estimatedPeriod(), 'f', 9)
+                                         : QStringLiteral("0"));
+    meta << QStringLiteral("# channels=%1").arg(m_store.channelCount());
+    meta << QStringLiteral("# rows=%1").arg(m_exportTo - m_exportFrom + 1);
+
+    m_exportThread->start();
+    QMetaObject::invokeMethod(m_exporter, "open", Qt::QueuedConnection,
+                              Q_ARG(QString, path),
+                              Q_ARG(QString, meta.join(QLatin1Char('\n')) + QLatin1Char('\n')),
+                              Q_ARG(int, m_store.channelCount()));
+}
+
+void Baud::onExportNeedMore()
+{
+    if (!m_exporter || m_exportCursor > m_exportTo) {
+        if (m_exporter)
+            QMetaObject::invokeMethod(m_exporter, "close", Qt::QueuedConnection);
+        return;
+    }
+
+    // 每次取一块，避免一次性拷贝整个缓冲区
+    constexpr qint64 kChunkRows = 8192;
+    const qint64 to = std::min(m_exportTo, m_exportCursor + kChunkRows - 1);
+
+    QVector<double> times;
+    QVector<double> values;
+    m_store.readRange(m_exportCursor, to, times, values);
+    m_exportCursor = to + 1;
+
+    QMetaObject::invokeMethod(m_exporter, "appendChunk", Qt::QueuedConnection,
+                              Q_ARG(QVector<double>, times),
+                              Q_ARG(QVector<double>, values));
+}
+
+void Baud::onExportFinished(bool ok, const QString &message)
+{
+    m_exporting = false;
+
+    if (ok) {
+        statusBar()->showMessage(message, 5000);
+    } else {
+        statusBar()->clearMessage();
+        QMessageBox::warning(this, QStringLiteral("导出 CSV"), message);
+    }
+
+    if (m_exportThread) {
+        m_exportThread->quit();
+        m_exportThread->wait(3000);
+        m_exportThread->deleteLater();
+        m_exportThread = nullptr;
+    }
+    m_exporter = nullptr;
+    m_exportCursor = 0;
+    m_exportFrom = 0;
+    m_exportTo = 0;
+}
+
+void Baud::onImportCsv()
+{
+    if (m_importThread) {
+        statusBar()->showMessage(QStringLiteral("正在导入，请稍候…"), 3000);
+        return;
+    }
+    if (m_exportThread) {
+        statusBar()->showMessage(QStringLiteral("正在导出，请稍候…"), 3000);
+        return;
+    }
+
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("导入 CSV"), QString(),
+        QStringLiteral("CSV 文件 (*.csv);;所有文件 (*)"));
+    if (path.isEmpty())
+        return;
+
+    // 导入会替换当前会话，先断开串口避免两路数据混在一起。
+    // m_importing 让 onFramesReceived 直接丢弃串口帧：closePortRequested 是异步的，
+    // 关闭前 worker 还会把残留批次发过来，若不丢弃会与导入帧混进同一份缓冲，
+    // 甚至触发通道数重校准把已导入的数据整体清空。
+    m_importing = true;
+    m_acceptData = false;
+    if (m_connected) {
+        emit closePortRequested();
+    }
+    resetSession();
+
+    m_importThread = new QThread(this);
+    m_importer = new CsvImporter;
+    m_importer->moveToThread(m_importThread);
+    connect(m_importThread, &QThread::finished, m_importer, &QObject::deleteLater);
+
+    connect(m_importer, &CsvImporter::framesParsed, this, &Baud::onImportFrames);
+    connect(m_importer, &CsvImporter::imported, this, &Baud::onImportFinished);
+    connect(m_importer, &CsvImporter::progressChanged, this, [this](int percent) {
+        if (!m_importing)
+            return;
+        statusBar()->showMessage(QStringLiteral("正在导入 CSV… %1%").arg(percent));
+    });
+
+    m_importThread->start();
+    QMetaObject::invokeMethod(m_importer, "importFile", Qt::QueuedConnection,
+                              Q_ARG(QString, path));
+}
+
+void Baud::onImportFrames(const FrameBatch &frames)
+{
+    if (frames.isEmpty())
+        return;
+
+    const FrameBatch accepted = m_store.appendFrames(frames);
+    if (accepted.isEmpty())
+        return;
+
+    const qint64 firstSampleIndex = m_store.sampleCount() - accepted.size();
+    const int channelCount = m_store.channelCount();
+    if (channelCount != m_lastChannelCount) {
+        m_scope->setChannelCount(channelCount);
+        rebuildChannelTable(channelCount);
+        m_lastChannelCount = channelCount;
+    } else if (firstSampleIndex == 0 && m_store.sampleCount() == accepted.size()) {
+        m_scope->clearData();
+    }
+
+    m_scope->appendFrames(accepted, firstSampleIndex);
+    m_plotDirty = true;
+}
+
+void Baud::onImportFinished(bool ok, const QString &message, qint64 rowCount, int channelCount)
+{
+    m_importing = false;
+    // 串口若已经关闭，onWorkerClosed 会恢复接收，这里补一次；
+    // 串口仍开着则保持关闭，等 onWorkerClosed 再恢复，避免残留帧混入导入结果。
+    if (!m_connected)
+        m_acceptData = true;
+
+    if (ok) {
+        // 导入数据的周期/抖动直接由文件里的时间列统计
+        m_measuredPeriod = m_store.estimatedPeriod();
+        m_measuredJitter = m_store.periodJitter();
+        statusBar()->showMessage(QStringLiteral("%1，%2 个通道").arg(message).arg(channelCount), 5000);
+        m_scope->resetView();
+    } else {
+        QMessageBox::warning(this, QStringLiteral("导入 CSV"), message);
+    }
+
+    if (m_importThread) {
+        m_importThread->quit();
+        m_importThread->wait(3000);
+        m_importThread->deleteLater();
+        m_importThread = nullptr;
+    }
+    m_importer = nullptr;
+}
+
 void Baud::updateStatus()
 {
     m_statusRxRate->setText(QStringLiteral("接收: %1 B/s").arg(m_rxRate));
@@ -867,6 +1103,15 @@ void Baud::updateStatus()
                                    .arg(replotMs));
     m_statusSamples->setText(QStringLiteral("样本: %1").arg(m_store.sampleCount()));
     m_statusChannels->setText(QStringLiteral("通道: %1").arg(m_store.channelCount()));
+
+    // 实测采样周期与抖动：由接收节奏自动推算，无需用户填写 Δt
+    if (m_measuredPeriod > 0.0) {
+        m_statusTiming->setText(QStringLiteral("实测 Δt: %1 · 抖动 ±%2")
+                                    .arg(TimeFormat::format(m_measuredPeriod))
+                                    .arg(TimeFormat::format(m_measuredJitter)));
+    } else {
+        m_statusTiming->setText(QStringLiteral("实测 Δt: --"));
+    }
 }
 
 void Baud::rebuildChannelTable(int channelCount)
@@ -987,6 +1232,8 @@ void Baud::resetSession()
     m_lastFrames = 0;
     m_rxRate = 0;
     m_frameRate = 0;
+    m_measuredPeriod = 0.0;
+    m_measuredJitter = 0.0;
     updateStatus();
 }
 
@@ -1004,6 +1251,27 @@ void Baud::stopSerialThread()
     m_worker = nullptr;
 }
 
+// 退出前停掉 CSV 导入/导出线程。
+// QThread 在仍运行时被析构会触发 qFatal（"QThread: Destroyed while thread is still running"），
+// 因此必须先 quit + wait；等待超时就放弃 deleteLater，宁可泄漏一个 QThread 对象也不能让程序崩掉。
+void Baud::stopIoThreads()
+{
+    const auto stopThread = [](QThread *&thread) {
+        if (!thread)
+            return;
+        thread->quit();
+        if (thread->wait(3000)) {
+            thread->deleteLater();
+        }
+        thread = nullptr;
+    };
+
+    stopThread(m_exportThread);
+    m_exporter = nullptr;
+    stopThread(m_importThread);
+    m_importer = nullptr;
+}
+
 void Baud::closeEvent(QCloseEvent *event)
 {
     m_shuttingDown = true;
@@ -1018,5 +1286,6 @@ void Baud::closeEvent(QCloseEvent *event)
         m_portTimer->stop();
 
     stopSerialThread();
+    stopIoThreads();
     event->accept();
 }

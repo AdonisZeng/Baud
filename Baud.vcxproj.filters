@@ -30,6 +30,9 @@
     <Filter Include="Model">
       <UniqueIdentifier>{D3A9F6C4-8E5B-4C0D-9F43-5E2A1B3C4D56}</UniqueIdentifier>
     </Filter>
+    <Filter Include="IO">
+      <UniqueIdentifier>{B8E3D4F5-2A6C-4E1B-9C8D-7F0A2B3C4D5E}</UniqueIdentifier>
+    </Filter>
     <Filter Include="UI">
       <UniqueIdentifier>{E4B0A7D5-9F6C-4D1E-A054-4F3B2C4D5E67}</UniqueIdentifier>
     </Filter>
@@ -56,6 +59,12 @@
     <QtMoc Include="Baud.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <QtMoc Include="src\io\CsvExporter.h">
+      <Filter>IO</Filter>
+    </QtMoc>
+    <QtMoc Include="src\io\CsvImporter.h">
+      <Filter>IO</Filter>
+    </QtMoc>
     <QtMoc Include="src\serial\SerialWorker.h">
       <Filter>Serial</Filter>
     </QtMoc>
@@ -77,6 +86,12 @@
     <ClCompile Include="main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\io\CsvExporter.cpp">
+      <Filter>IO</Filter>
+    </ClCompile>
+    <ClCompile Include="src\io\CsvImporter.cpp">
+      <Filter>IO</Filter>
+    </ClCompile>
     <ClCompile Include="src\protocol\JustFloatParser.cpp">
       <Filter>Protocol</Filter>
     </ClCompile>
@@ -87,6 +102,9 @@
       <Filter>Protocol</Filter>
     </ClCompile>
     <ClCompile Include="src\serial\SerialWorker.cpp">
+      <Filter>Serial</Filter>
+    </ClCompile>
+    <ClCompile Include="src\serial\FrameTimestamper.cpp">
       <Filter>Serial</Filter>
     </ClCompile>
     <ClCompile Include="src\model\ChannelStore.cpp">
@@ -125,8 +143,20 @@
     <ClInclude Include="src\serial\SerialSettings.h">
       <Filter>Serial</Filter>
     </ClInclude>
+    <ClInclude Include="src\serial\FrameTimestamper.h">
+      <Filter>Serial</Filter>
+    </ClInclude>
     <ClInclude Include="src\model\ChannelStore.h">
       <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="src\io\CsvExporter.h">
+      <Filter>IO</Filter>
+    </ClInclude>
+    <ClInclude Include="src\io\CsvImporter.h">
+      <Filter>IO</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ui\TimeFormat.h">
+      <Filter>UI</Filter>
     </ClInclude>
     <ClInclude Include="src\ui\Theme.h">
       <Filter>UI</Filter>

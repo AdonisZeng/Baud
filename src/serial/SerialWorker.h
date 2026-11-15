@@ -3,10 +3,12 @@
 
 #pragma once
 
+#include "FrameTimestamper.h"
 #include "SerialSettings.h"
 #include "protocol/IProtocolParser.h"
 #include "protocol/ProtocolTypes.h"
 
+#include <QElapsedTimer>
 #include <QObject>
 
 #include <memory>
@@ -35,6 +37,8 @@ signals:
     void errorOccurred(const QString &message);
     void rawBytesReceived(const QByteArray &bytes);
     void framesReceived(const FrameBatch &frames);
+    // 实测采样周期（秒）与抖动（秒），由接收节奏自动推算
+    void timingUpdated(double period, double jitter);
 
 private slots:
     void onReadyRead();
@@ -42,6 +46,10 @@ private slots:
     void onSerialError(QSerialPort::SerialPortError error);
 
 private:
+    // 周期/抖动上报节流：串口批次可能非常密集，
+    // 每批都发信号会把 GUI 线程淹没
+    bool shouldReportTiming(double now);
+
     void closePortInternal(bool notify);
 
     static constexpr int kFlushIntervalMs = 16;
@@ -55,4 +63,12 @@ private:
     QByteArray m_pendingRaw;
     FrameBatch m_pendingFrames;
     bool m_open = false;
+
+    // 单调时钟，用于给每帧打时间戳
+    QElapsedTimer m_clock;
+    // 时间戳重建与采样周期估计
+    FrameTimestamper m_timestamper;
+    // 上报节流：记录上次上报时刻（秒，连接后）与是否已上报过
+    double m_lastTimingReportTime = 0.0;
+    bool m_timingReported = false;
 };

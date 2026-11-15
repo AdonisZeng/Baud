@@ -4,6 +4,7 @@
 #include "ScopePlot.h"
 
 #include "ui/Theme.h"
+#include "ui/TimeFormat.h"
 
 #include <QApplication>
 #include <QContextMenuEvent>
@@ -23,10 +24,53 @@ QString formatValueText(double value)
                                 : QStringLiteral("--");
 }
 
-QString formatIndexText(double x)
-{
-    return QString::number(qRound64(x));
-}
+// 时间轴刻度：按当前跨度自动选择 ms / s / min 单位，
+// 保证同一坐标轴上的所有刻度单位一致。
+class TimeAxisTicker : public QCPAxisTicker {
+public:
+    TimeAxisTicker()
+    {
+        setTickCount(6);
+        setTickStepStrategy(QCPAxisTicker::tssReadability);
+    }
+
+protected:
+    void generate(const QCPRange &range, const QLocale &locale, QChar formatChar, int precision,
+                  QVector<double> &ticks, QVector<double> *subTicks,
+                  QVector<QString> *tickLabels) override
+    {
+        const double span = range.size();
+        if (span < 0.02) {
+            m_scale = 1000.0;
+            m_suffix = QStringLiteral(" ms");
+            m_decimals = 1;
+        } else if (span < 120.0) {
+            m_scale = 1.0;
+            m_suffix = QStringLiteral(" s");
+            m_decimals = span < 2.0 ? 3 : 2;
+        } else {
+            m_scale = 1.0 / 60.0;
+            m_suffix = QStringLiteral(" min");
+            m_decimals = 2;
+        }
+
+        QCPAxisTicker::generate(range, locale, formatChar, precision, ticks, subTicks, tickLabels);
+    }
+
+    QString getTickLabel(double tick, const QLocale &locale, QChar formatChar,
+                         int precision) override
+    {
+        Q_UNUSED(locale);
+        Q_UNUSED(formatChar);
+        Q_UNUSED(precision);
+        return QString::number(tick * m_scale, 'f', m_decimals) + m_suffix;
+    }
+
+private:
+    double m_scale = 1.0;
+    int m_decimals = 3;
+    QString m_suffix;
+};
 } // namespace
 
 ScopePlot::ScopePlot(QWidget *parent)
@@ -53,11 +97,12 @@ void ScopePlot::setupStyle()
     setToolTip(QStringLiteral(
         "绘图区滚轮：同时缩放 X/Y；X 轴带滚轮：只缩放 X；Y 轴带滚轮：只缩放 Y\n"
         "X 轴带 / 绘图区双击：固定竖线；双击已有竖线：移除；Y 轴带双击：复位视图\n"
-        "左键点竖线设为 A，Shift+左键设为 B；A/B 是测量游标，不裁剪波形；右键菜单更多"));
+        "左键点竖线设为 A，Shift+左键设为 B；A/B 是测量游标，显示真实时间差，不裁剪波形；右键菜单更多"));
 
-    xAxis->setLabel(QStringLiteral("样本"));
+    xAxis->setLabel(QStringLiteral("时间"));
     yAxis->setLabel(QStringLiteral("数值"));
-    xAxis->setRange(0, kDefaultViewSpan);
+    xAxis->setTicker(QSharedPointer<QCPAxisTicker>(new TimeAxisTicker));
+    xAxis->setRange(0, 1.0);
     yAxis->setRange(-1, 1);
 
     const QColor tickColor("#A9B4C0");
@@ -100,6 +145,7 @@ void ScopePlot::setChannelCount(int count)
     clearGraphs();
     m_graphs.clear();
     m_latestSample = -1;
+    m_latestTime = 0.0;
     setFollow(true, true);
 
     for (int channel = 0; channel < count; ++channel) {
@@ -133,7 +179,7 @@ void ScopePlot::appendFrames(const FrameBatch &frames, qint64 firstSampleIndex)
     QVector<QCPGraphData> points(frameCount);
     for (int channel = 0; channel < m_graphs.size(); ++channel) {
         for (int i = 0; i < frameCount; ++i) {
-            points[i].key = static_cast<double>(firstSampleIndex + i);
+            points[i].key = frames.at(i).t;
             points[i].value = frames.at(i).values.at(channel);
         }
         // 直接构造 QCPGraphData，省去 keys/values 到内部数据结构的二次拷贝
@@ -141,13 +187,17 @@ void ScopePlot::appendFrames(const FrameBatch &frames, qint64 firstSampleIndex)
     }
 
     m_latestSample = firstSampleIndex + frameCount - 1;
+    m_latestTime = frames.last().t;
     if (m_hint)
         m_hint->setVisible(false);
 
     for (QCPGraph *graph : m_graphs) {
-        const qint64 keepFrom = m_latestSample - ChannelStore::kCapacity;
-        if (keepFrom > 0)
-            graph->data()->removeBefore(static_cast<double>(keepFrom));
+        // 图形数据以时间（秒）为 key，超出环形缓冲容量后按时间裁剪最旧的数据
+        const int excess = graph->data()->size() - static_cast<int>(ChannelStore::kCapacity);
+        if (excess > 0) {
+            const double keepFrom = graph->data()->at(excess)->key;
+            graph->data()->removeBefore(keepFrom);
+        }
     }
 }
 
@@ -163,12 +213,20 @@ void ScopePlot::rebuildFromStore(const ChannelStore &store)
 
     // 只回填当前视窗，避免暂停恢复时把 20 万点/通道全部灌入 QCPGraph
     const qint64 to = store.sampleCount() - 1;
-    const qint64 from = std::max(store.firstStoredIndex(), to - m_viewSpan + 1);
+    const double latestTime = store.timeAt(to);
+    // 视窗左端 = 最新时刻 - 窗口长度，按时间反查起始序号
+    const double windowStart = latestTime - static_cast<double>(m_viewSpan) / 1000.0;
+    qint64 from = store.indexAtTime(windowStart);
+    if (from < 0)
+        from = store.firstStoredIndex();
+    from = std::max(from, store.firstStoredIndex());
+    if (from > to)
+        from = to;
     const int sampleCount = static_cast<int>(to - from + 1);
 
     QVector<double> keys(sampleCount);
     for (int i = 0; i < sampleCount; ++i)
-        keys[i] = static_cast<double>(from + i);
+        keys[i] = store.timeAt(from + i);
 
     for (int channel = 0; channel < store.channelCount(); ++channel) {
         QVector<double> values(sampleCount);
@@ -178,6 +236,7 @@ void ScopePlot::rebuildFromStore(const ChannelStore &store)
     }
 
     m_latestSample = to;
+    m_latestTime = store.timeAt(to);
     setFollow(true, true);
     if (m_hint)
         m_hint->setVisible(false);
@@ -217,10 +276,11 @@ void ScopePlot::clearData()
         graph->data()->clear();
 
     m_latestSample = -1;
+    m_latestTime = 0.0;
     setFollow(true, true);
     if (m_hint)
         m_hint->setVisible(true);
-    xAxis->setRange(0, m_viewSpan);
+    xAxis->setRange(0, 1.0);
     yAxis->setRange(-1, 1);
     clearMarkers();
     hideHover();
@@ -239,11 +299,13 @@ void ScopePlot::refresh()
         return;
 
     if (m_followLatest) {
-        const qint64 lower = std::max<qint64>(0, m_latestSample - m_viewSpan + 1);
-        double upper = static_cast<double>(m_latestSample);
-        if (upper <= static_cast<double>(lower))
-            upper = static_cast<double>(lower) + 1.0;
-        xAxis->setRange(static_cast<double>(lower), upper);
+        // 视图窗口以时间（毫秒）表示：左端对齐到“最新时刻 - 窗口长度”
+        const double span = static_cast<double>(m_viewSpan) / 1000.0;
+        double upper = m_latestTime;
+        double lower = upper - span;
+        if (upper <= lower)
+            upper = lower + 1.0;
+        xAxis->setRange(lower, upper);
     }
 
     if (m_autoY) {
@@ -292,7 +354,7 @@ void ScopePlot::refresh()
 void ScopePlot::resetYRange()
 {
     m_autoY = true;
-    xAxis->setRange(0, m_viewSpan);
+    xAxis->setRange(m_latestTime - static_cast<double>(m_viewSpan) / 1000.0, m_latestTime);
     yAxis->setRange(-1, 1);
     replot(QCustomPlot::rpQueuedReplot);
 }
@@ -432,7 +494,7 @@ double ScopePlot::boundaryStart() const
 {
     if (m_latestSample < 0)
         return 0.0;
-    return static_cast<double>(std::max<qint64>(0, m_latestSample - m_viewSpan + 1));
+    return m_latestTime - static_cast<double>(m_viewSpan) / 1000.0;
 }
 
 double ScopePlot::markerX(int id) const
@@ -440,7 +502,7 @@ double ScopePlot::markerX(int id) const
     if (id == kStartMarkerId)
         return boundaryStart();
     if (id == kEndMarkerId)
-        return static_cast<double>(m_latestSample);
+        return m_latestTime;
 
     for (const Marker &marker : m_markers) {
         if (marker.id == id)
@@ -449,29 +511,40 @@ double ScopePlot::markerX(int id) const
     return std::numeric_limits<double>::quiet_NaN();
 }
 
-double ScopePlot::sampleValueAt(const QCPGraph *graph, double key) const
+double ScopePlot::sampleValueAt(const QCPGraph *graph, double time) const
 {
     if (!graph || graph->data()->size() <= 0)
         return std::numeric_limits<double>::quiet_NaN();
 
     const auto data = graph->data();
-    const double sample = std::floor(key + 0.5);
-    auto it = data->findBegin(sample, false);
-    auto candidate = it;
-    if (candidate == data->constEnd() || candidate->key > sample) {
-        if (candidate == data->constBegin())
+    // 图形数据按时间递增存放，二分定位到 time 附近的两个点
+    auto it = data->findBegin(time, false);
+    if (it == data->constEnd()) {
+        if (it == data->constBegin())
             return std::numeric_limits<double>::quiet_NaN();
-        --candidate;
+        --it;
+        return it->value;
     }
 
-    double nearest = candidate->value;
-    double distance = qAbs(candidate->key - sample);
-    if (it != data->constEnd() && qAbs(it->key - sample) < distance) {
-        nearest = it->value;
-        distance = qAbs(it->key - sample);
+    double nearest = it->value;
+    double distance = std::fabs(it->key - time);
+    if (it != data->constBegin()) {
+        auto previous = it;
+        --previous;
+        const double previousDistance = std::fabs(previous->key - time);
+        if (previousDistance < distance) {
+            nearest = previous->value;
+            distance = previousDistance;
+        }
     }
-    return distance <= 1.0 ? nearest
-                           : std::numeric_limits<double>::quiet_NaN();
+    return nearest;
+}
+
+qint64 ScopePlot::indexAtTime(double time) const
+{
+    if (!m_store)
+        return -1;
+    return m_store->nearestIndexAtTime(time);
 }
 
 void ScopePlot::syncMarkers()
@@ -484,7 +557,7 @@ void ScopePlot::syncMarkers()
         if (marker.id == kStartMarkerId)
             marker.x = boundaryStart();
         else if (marker.id == kEndMarkerId)
-            marker.x = static_cast<double>(m_latestSample);
+            marker.x = m_latestTime;   // X 轴是时间轴（秒），不能用样本序号
         setVerticalLineX(marker.line, marker.x);
 
         const double pixelX = xAxis->coordToPixel(marker.x);
@@ -496,7 +569,7 @@ void ScopePlot::syncMarkers()
             continue;
 
         const bool measured = marker.id == m_measureA || marker.id == m_measureB;
-        QString text = formatIndexText(marker.x);
+        QString text = TimeFormat::formatCompact(marker.x);
         if (marker.id == m_measureA)
             text.prepend(QStringLiteral("A "));
         else if (marker.id == m_measureB)
@@ -512,7 +585,17 @@ void ScopePlot::addFixedMarker(double x)
 {
     Marker marker;
     marker.id = m_nextMarkerId++;
-    marker.x = std::floor(x + 0.5);
+    // 吸附到最近的采样点，避免游标落在两个采样点之间
+    const qint64 index = indexAtTime(x);
+    if (index >= 0 && m_store) {
+        const double time = m_store->timeAt(index);
+        if (std::isfinite(time))
+            marker.x = time;
+        else
+            marker.x = x;
+    } else {
+        marker.x = x;
+    }
     marker.color = QColor("#E6EDF5");
     marker.line = createVerticalLine(marker.color, false);
     marker.label = createBadge(marker.color);
@@ -623,10 +706,10 @@ void ScopePlot::syncHover(const QPoint &pos)
 
     const QRect rect = axisRect()->rect();
     if (m_hoverVerticalVisible) {
-        const double sample = std::floor(xAxis->pixelToCoord(pos.x()) + 0.5);
-        setVerticalLineX(m_hoverVertical, sample);
+        const double time = xAxis->pixelToCoord(pos.x());
+        setVerticalLineX(m_hoverVertical, time);
         m_hoverVertical->setVisible(true);
-        m_hoverXBadge->setText(formatIndexText(sample));
+        m_hoverXBadge->setText(TimeFormat::formatCompact(time));
         m_hoverXBadge->position->setCoords(
             qBound<double>(rect.left(), pos.x(), rect.right()), rect.bottom() + 24);
         m_hoverXBadge->setVisible(true);
@@ -636,7 +719,7 @@ void ScopePlot::syncHover(const QPoint &pos)
             QCPItemText *label = m_valueLabels.at(channel);
             if (!graph->visible())
                 continue;
-            const double value = sampleValueAt(graph, sample);
+            const double value = sampleValueAt(graph, time);
             if (!std::isfinite(value) || value < yAxis->range().lower
                 || value > yAxis->range().upper) {
                 continue;
@@ -644,7 +727,7 @@ void ScopePlot::syncHover(const QPoint &pos)
             label->setText(QStringLiteral("CH%1: %2")
                                .arg(channel + 1)
                                .arg(formatValueText(value)));
-            label->position->setCoords(sample, value);
+            label->position->setCoords(time, value);
             label->setVisible(true);
         }
     }
@@ -687,10 +770,10 @@ void ScopePlot::updateMeasurement()
     } else {
         const double lower = std::min(fromX, toX);
         const double upper = std::max(fromX, toX);
-        text = QStringLiteral("A %1 → B %2    ΔX %3")
-                   .arg(formatIndexText(fromX))
-                   .arg(formatIndexText(toX))
-                   .arg(formatIndexText(upper - lower));
+        text = QStringLiteral("A %1 → B %2    Δt %3")
+                   .arg(TimeFormat::format(fromX))
+                   .arg(TimeFormat::format(toX))
+                   .arg(TimeFormat::formatDelta(upper - lower));
 
         QString stats;
         for (int channel = 0; channel < m_graphs.size(); ++channel) {
@@ -701,12 +784,15 @@ void ScopePlot::updateMeasurement()
             double maxValue = 0.0;
             if (m_store && channel < m_store->channelCount()) {
                 // 直接用环形缓冲统计，视窗外未加载到 QCPGraph 的点也能参与
-                found = m_store->rangeMinMax(channel, qRound64(lower), qRound64(upper),
-                                             minValue, maxValue);
+                const qint64 fromIndex = m_store->indexAtTime(lower);
+                const qint64 toIndex = m_store->indexAtTime(upper);
+                if (fromIndex >= 0 && toIndex >= fromIndex)
+                    found = m_store->rangeMinMax(channel, fromIndex, toIndex,
+                                                 minValue, maxValue);
             } else {
                 const auto data = m_graphs.at(channel)->data();
-                const auto begin = data->findBegin(lower - 0.5, false);
-                const auto end = data->findEnd(upper + 0.5, false);
+                const auto begin = data->findBegin(lower, false);
+                const auto end = data->findEnd(upper, false);
                 for (auto it = begin; it != end; ++it) {
                     if (!std::isfinite(it->value))
                         continue;
@@ -748,7 +834,7 @@ void ScopePlot::setFollow(bool follow, bool autoY)
 
 void ScopePlot::setViewSpan(qint64 span)
 {
-    const qint64 clamped = std::clamp(span, kMinViewSpan, kMaxViewSpan);
+    const qint64 clamped = std::clamp(span, kMinViewSpanMs, kMaxViewSpanMs);
     if (clamped == m_viewSpan)
         return;
     m_viewSpan = clamped;
@@ -763,7 +849,7 @@ void ScopePlot::setViewSpan(qint64 span)
 void ScopePlot::resetView()
 {
     setFollow(true, true);
-    xAxis->setRange(0, m_viewSpan);
+    xAxis->setRange(m_latestTime - static_cast<double>(m_viewSpan) / 1000.0, m_latestTime);
     yAxis->setRange(-1, 1);
     refresh();
     replot(QCustomPlot::rpQueuedReplot);

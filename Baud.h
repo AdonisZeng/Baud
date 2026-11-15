@@ -21,6 +21,8 @@ class QStackedWidget;
 class QTableWidget;
 class QThread;
 class QTimer;
+class CsvExporter;
+class CsvImporter;
 class ScopePlot;
 class SerialWorker;
 class UpdateChecker;
@@ -61,6 +63,13 @@ private slots:
     void onSendClicked();
     void onRawModeChanged(int index);
     void onSendModeChanged(int index);
+    void onExportCsv();
+    void onImportCsv();
+    void onExportNeedMore();
+    void onExportFinished(bool ok, const QString &message);
+    void onImportFrames(const FrameBatch &frames);
+    void onImportFinished(bool ok, const QString &message, qint64 rowCount, int channelCount);
+    void onTimingUpdated(double period, double jitter);
 
 private:
     void buildUi();
@@ -74,6 +83,7 @@ private:
     void appendRawData(const QByteArray &bytes);
     void resetSession();
     void stopSerialThread();
+    void stopIoThreads();
     void checkForUpdates(bool automatic);
 
     SerialSettings currentSettings() const;
@@ -116,6 +126,7 @@ private:
     QLabel *m_statusState = nullptr;
     QLabel *m_statusRxRate = nullptr;
     QLabel *m_statusFrameRate = nullptr;
+    QLabel *m_statusTiming = nullptr;
     QLabel *m_statusSamples = nullptr;
     QLabel *m_statusChannels = nullptr;
 
@@ -127,12 +138,25 @@ private:
     UpdateChecker *m_updateChecker = nullptr;
     UpdateDialog *m_updateDialog = nullptr;
 
+    // CSV 导入导出
+    QThread *m_exportThread = nullptr;
+    CsvExporter *m_exporter = nullptr;
+    QThread *m_importThread = nullptr;
+    CsvImporter *m_importer = nullptr;
+    qint64 m_exportFrom = 0;
+    qint64 m_exportTo = 0;
+    qint64 m_exportCursor = 0;
+
     bool m_connected = false;
     bool m_connecting = false;
     bool m_paused = false;
     bool m_shuttingDown = false;
     bool m_acceptData = true;
     bool m_plotDirty = false;
+    // 导出期间冻结接收：保证导出区间对应的缓冲数据不被新数据覆盖
+    bool m_exporting = false;
+    // 导入期间丢弃串口数据：避免串口帧与导入帧混进同一份缓冲
+    bool m_importing = false;
     int m_lastChannelCount = 0;
     int m_hexColumn = 0;
 
@@ -142,4 +166,8 @@ private:
     qint64 m_lastFrames = 0;
     qint64 m_rxRate = 0;
     qint64 m_frameRate = 0;
+
+    // 由串口线程实测的采样周期与抖动（秒）
+    double m_measuredPeriod = 0.0;
+    double m_measuredJitter = 0.0;
 };

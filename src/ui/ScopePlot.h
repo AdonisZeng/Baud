@@ -26,9 +26,10 @@ class ScopePlot : public QCustomPlot {
 public:
     explicit ScopePlot(QWidget *parent = nullptr);
 
-    static constexpr qint64 kMinViewSpan = 100;
-    static constexpr qint64 kMaxViewSpan = ChannelStore::kCapacity;
-    static constexpr qint64 kDefaultViewSpan = 5000;
+    // 视图窗口长度（毫秒）
+    static constexpr qint64 kMinViewSpanMs = 10;
+    static constexpr qint64 kMaxViewSpanMs = 600000;
+    static constexpr qint64 kDefaultViewSpanMs = 5000;
 
     void setChannelCount(int count);
     void appendFrames(const FrameBatch &frames, qint64 firstSampleIndex);
@@ -42,7 +43,7 @@ public:
     qint64 viewSpan() const;
 
 signals:
-    void viewSpanChanged(qint64 span);
+    void viewSpanChanged(qint64 spanMs);
     void followLatestChanged(bool follow);
     void measurementChanged(const QString &text);
 
@@ -68,7 +69,7 @@ private:
 
     struct Marker {
         int id = 0;
-        double x = 0.0;
+        double x = 0.0;   // X 坐标（秒）
         QColor color;
         QCPItemLine *line = nullptr;
         QCPItemText *label = nullptr;
@@ -99,7 +100,10 @@ private:
     bool isPlotArea(const QPoint &pos) const;
     double boundaryStart() const;
     double markerX(int id) const;
-    double sampleValueAt(const QCPGraph *graph, double key) const;
+    // 按时间坐标取最近的采样点值
+    double sampleValueAt(const QCPGraph *graph, double time) const;
+    // 时间坐标 -> 最接近的采样序号
+    qint64 indexAtTime(double time) const;
 
     const ChannelStore *m_store = nullptr;
     QVector<QCPGraph *> m_graphs;
@@ -114,8 +118,9 @@ private:
 
     QPoint m_pressPosition;
     QPoint m_lastHoverPosition;
-    qint64 m_latestSample = -1;
-    qint64 m_viewSpan = kDefaultViewSpan;
+    qint64 m_latestSample = -1;    // 最新帧的序号（查环形缓冲用）
+    double m_latestTime = 0.0;      // 最新帧的时间坐标（秒）
+    qint64 m_viewSpan = kDefaultViewSpanMs;  // 视图窗口长度（毫秒）
     int m_nextMarkerId = 0;
     int m_measureA = kStartMarkerId;
     int m_measureB = kEndMarkerId;
