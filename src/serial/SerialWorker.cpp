@@ -126,8 +126,11 @@ void SerialWorker::onReadyRead()
     if (chunk.isEmpty())
         return;
 
-    // 本批数据的到达时刻（单调时钟，秒）
-    const double chunkTime = m_clock.elapsed();
+    // 本批数据的到达时刻（单调时钟，秒）。
+    // QElapsedTimer::nsecsElapsed() 是纳秒，必须经 FrameTimestamper 换算成秒，
+    // 否则时间轴、周期估计和 CSV 元数据会整体放大 1000 倍。
+    const double chunkTime =
+        FrameTimestamper::secondsFromNanoseconds(m_clock.nsecsElapsed());
 
     m_pendingRaw.append(chunk);
     if (m_pendingRaw.size() > kRawPendingLimit)

@@ -37,6 +37,8 @@ public:
     void setChannelVisible(int channel, bool visible);
     void setFollowLatest(bool follow);
     void setPaused(bool paused);
+    // 实测采样周期（秒），用于判断数据流中断并断开折线
+    void setSamplePeriod(double seconds);
     void setStore(const ChannelStore *store);
     void clearData();
     QColor channelColor(int channel) const;
@@ -80,6 +82,14 @@ private:
     void setupItems();
     void rebuildValueLabels(int count);
 
+    // 以“最新时刻 - 窗口长度”为显示窗口；无数据时窗口为 [-span, 0]，
+    // 让左右边界在连接前就可见。
+    void applyWindow();
+    void setXRangeProgrammatic(double lower, double upper);
+    void setYRangeProgrammatic(double lower, double upper);
+    // 只清曲线数据，保留用户固定的游标（暂停恢复时使用）
+    void clearGraphData();
+
     QCPItemLine *createVerticalLine(const QColor &color, bool dashed);
     QCPItemText *createBadge(const QColor &color);
     void setVerticalLineX(QCPItemLine *line, double x);
@@ -98,7 +108,6 @@ private:
     bool isXBand(const QPoint &pos) const;
     bool isYBand(const QPoint &pos) const;
     bool isPlotArea(const QPoint &pos) const;
-    double boundaryStart() const;
     double markerX(int id) const;
     // 按时间坐标取最近的采样点值
     double sampleValueAt(const QCPGraph *graph, double time) const;
@@ -117,10 +126,10 @@ private:
     QCPItemText *m_hoverYBadge = nullptr;
 
     QPoint m_pressPosition;
-    QPoint m_lastHoverPosition;
     qint64 m_latestSample = -1;    // 最新帧的序号（查环形缓冲用）
     double m_latestTime = 0.0;      // 最新帧的时间坐标（秒）
     qint64 m_viewSpan = kDefaultViewSpanMs;  // 视图窗口长度（毫秒）
+    double m_samplePeriod = 0.0;             // 实测采样周期（秒），0 表示未知
     int m_nextMarkerId = 0;
     int m_measureA = kStartMarkerId;
     int m_measureB = kEndMarkerId;
@@ -129,6 +138,8 @@ private:
     bool m_paused = false;
     bool m_pressWasClick = false;
     bool m_hoverVerticalVisible = false;
+    // 程序内调整坐标范围时置位，避免被当成用户缩放而关闭“跟随最新”/自动 Y
+    bool m_settingRange = false;
     QString m_lastMeasurement;
     QElapsedTimer m_measureTimer;
 };

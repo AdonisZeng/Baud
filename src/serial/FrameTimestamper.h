@@ -35,6 +35,13 @@ public:
     // 时间戳最小间隔，防止相邻帧出现完全相同的 key
     static constexpr double kMinPeriod = 1e-9;
 
+    // QElapsedTimer::nsecsElapsed() 的纳秒计数 -> 秒。
+    // 单独抽出来是为了避免再把毫秒当秒（曾导致时间轴整体放大 1000 倍）。
+    static constexpr double secondsFromNanoseconds(qint64 nanoseconds)
+    {
+        return static_cast<double>(nanoseconds) / 1e9;
+    }
+
     // 复位（重新连接时调用）
     void reset();
 

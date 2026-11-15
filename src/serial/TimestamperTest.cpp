@@ -62,6 +62,16 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // ---- 0. 单调时钟纳秒 -> 秒换算（曾把毫秒当秒，时间轴放大 1000 倍）----
+    {
+        check(std::fabs(FrameTimestamper::secondsFromNanoseconds(1'000'000'000) - 1.0) < 1e-12,
+              "纳秒换算：1e9 ns == 1 s");
+        check(std::fabs(FrameTimestamper::secondsFromNanoseconds(16'000'000) - 0.016) < 1e-12,
+              "纳秒换算：16e6 ns == 16 ms");
+        check(std::fabs(FrameTimestamper::secondsFromNanoseconds(1'000'000) - 0.001) < 1e-12,
+              "纳秒换算：1e6 ns == 1 ms");
+    }
+
     // ---- 1. 稳态 1 kHz，批大小固定 ----
     {
         FrameTimestamper stamper;

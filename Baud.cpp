@@ -309,15 +309,16 @@ void Baud::buildUi()
     QHBoxLayout *scopeBarLayout = new QHBoxLayout(scopeBar);
     scopeBarLayout->setContentsMargins(2, 0, 2, 0);
     scopeBarLayout->setSpacing(8);
-    scopeBarLayout->addWidget(new QLabel(QStringLiteral("时间窗口(ms)"), scopeBar));
+    scopeBarLayout->addWidget(new QLabel(QStringLiteral("显示缓冲(ms)"), scopeBar));
     m_viewSpanSpin = new QSpinBox(scopeBar);
     m_viewSpanSpin->setRange(static_cast<int>(ScopePlot::kMinViewSpanMs),
                              static_cast<int>(ScopePlot::kMaxViewSpanMs));
     m_viewSpanSpin->setSingleStep(100);
     m_viewSpanSpin->setValue(static_cast<int>(ScopePlot::kDefaultViewSpanMs));
     m_viewSpanSpin->setToolTip(QStringLiteral(
-        "X 轴显示的时间窗口长度。窗口跟随最新数据自动滚动，"
-        "滚轮缩放后可手动查看历史。底层环形缓冲固定为 200000 点/通道"));
+        "左右两条边界之间的 X 轴长度。跟随最新时，波形从右边界进入、"
+        "到左边界移出；滚轮/拖动缩放后可点“跟随最新”恢复。"
+        "底层环形缓冲固定为 200000 点/通道"));
     scopeBarLayout->addWidget(m_viewSpanSpin);
     m_followButton = new QPushButton(QStringLiteral("跟随最新"), scopeBar);
     m_followButton->setCheckable(true);
@@ -326,13 +327,9 @@ void Baud::buildUi()
     scopeBarLayout->addWidget(m_followButton);
     m_clearMarkersButton = new QPushButton(QStringLiteral("清除游标"), scopeBar);
     scopeBarLayout->addWidget(m_clearMarkersButton);
-    QLabel *scopeHint = new QLabel(
-        QStringLiteral("轴带滚轮单轴缩放 · 绘图区 XY 同缩 · 双击固定/移除竖线"
-                       " · 左键选 A / Shift+左键选 B · A/B 不裁剪波形 · 右键更多"),
-        scopeBar);
-    scopeHint->setWordWrap(true);
-    scopeHint->setStyleSheet(QStringLiteral("color: #7E8DA0;"));
-    scopeBarLayout->addWidget(scopeHint, 1);
+    // 交互说明全部放在波形控件的 tooltip 里；这里不再放长提示，
+    // 否则窄窗口下 QLabel 自动换行会把波形区顶下去一大截。
+    scopeBarLayout->addStretch(1);
     scopeLayout->addWidget(scopeBar);
 
     m_scope = new ScopePlot(scopePage);
@@ -340,7 +337,7 @@ void Baud::buildUi()
     scopeLayout->addWidget(m_scope, 1);
 
     m_measureLabel = new QLabel(
-        QStringLiteral("测量游标：默认 A 窗口起点 → B 最新点（不裁剪波形，等待数据）"),
+        QStringLiteral("测量游标：A 左边界 → B 右边界（跟随最新时即显示缓冲；等待数据）"),
         scopePage);
     m_measureLabel->setWordWrap(true);
     m_measureLabel->setMinimumHeight(34);
@@ -571,7 +568,10 @@ void Baud::refreshPorts()
 
 void Baud::updateConnectionUi()
 {
-    const bool configEnabled = !m_connected && !m_connecting;
+    // 导入/导出期间串口、协议、清空等会改动 ChannelStore 的控件全部锁住，
+    // 否则导出区间会被清空/重连/切协议破坏，或导入数据与串口会话混在一起。
+    const bool ioBusy = m_exporting || m_importing;
+    const bool configEnabled = !m_connected && !m_connecting && !ioBusy;
     const bool rawMode = currentProtocol() == ProtocolMode::RawData;
 
     m_portCombo->setEnabled(configEnabled);
@@ -581,20 +581,20 @@ void Baud::updateConnectionUi()
     m_stopBitsCombo->setEnabled(configEnabled);
     m_flowCombo->setEnabled(configEnabled);
     m_refreshPortsButton->setEnabled(configEnabled);
-    m_protocolCombo->setEnabled(!m_connecting);
+    m_protocolCombo->setEnabled(!m_connecting && !ioBusy);
 
-    m_connectButton->setEnabled(!m_connecting);
+    m_connectButton->setEnabled(!m_connecting && !ioBusy);
     m_connectButton->setText(m_connecting ? QStringLiteral("连接中…")
                                           : (m_connected ? QStringLiteral("断开")
                                                          : QStringLiteral("连接")));
 
-    m_sendEdit->setEnabled(m_connected);
-    m_sendModeCombo->setEnabled(m_connected);
-    m_lineEndingCombo->setEnabled(m_connected);
-    m_sendButton->setEnabled(m_connected);
+    m_sendEdit->setEnabled(m_connected && !ioBusy);
+    m_sendModeCombo->setEnabled(m_connected && !ioBusy);
+    m_lineEndingCombo->setEnabled(m_connected && !ioBusy);
+    m_sendButton->setEnabled(m_connected && !ioBusy);
 
-    m_pauseButton->setEnabled(m_connected && !rawMode);
-    m_clearButton->setEnabled(true);
+    m_pauseButton->setEnabled(m_connected && !rawMode && !ioBusy);
+    m_clearButton->setEnabled(!ioBusy);
 
     if (rawMode && m_pauseButton->isChecked()) {
         m_pauseButton->setChecked(false);
@@ -603,7 +603,10 @@ void Baud::updateConnectionUi()
             m_scope->setPaused(false);
     }
     m_pauseButton->setText(m_paused ? QStringLiteral("继续") : QStringLiteral("暂停"));
-    m_stack->setCurrentIndex(rawMode ? 1 : 0);
+    // RawData 下默认显示原始监视页；但 CSV 导入的是数值波形，
+    // 导入期间/缓冲区已有通道数据时仍显示波形页，避免导入后看不到数据。
+    const bool showScope = !rawMode || m_importing || m_store.channelCount() > 0;
+    m_stack->setCurrentIndex(showScope ? 0 : 1);
 
     if (m_connecting) {
         m_statusState->setText(QStringLiteral("连接中…"));
@@ -642,6 +645,9 @@ ProtocolMode Baud::currentProtocol() const
 void Baud::onConnectClicked()
 {
     if (m_connected || m_connecting) {
+        // 断开前先停止接收：worker 在关闭前还会 flush 一次残留批次，
+        // 不挡住的话断开后波形仍会“冒”出一截旧数据。
+        m_acceptData = false;
         emit closePortRequested();
         return;
     }
@@ -672,12 +678,18 @@ void Baud::onPauseClicked()
         m_plotDirty = false;
         m_scope->rebuildFromStore(m_store);
         m_scope->setFollowLatest(true);
+        m_lastChannelCount = m_store.channelCount();
     }
 }
 
 void Baud::onClearClicked()
 {
+    if (m_exporting || m_importing) {
+        statusBar()->showMessage(QStringLiteral("正在导入/导出，请稍候…"), 3000);
+        return;
+    }
     resetSession();
+    updateConnectionUi();
     statusBar()->showMessage(QStringLiteral("已清空当前会话数据"), 3000);
 }
 
@@ -732,10 +744,22 @@ void Baud::onWorkerClosed()
     m_acceptData = true;
     m_connected = false;
     m_connecting = false;
+    const bool wasPaused = m_paused;
     m_paused = false;
     m_pauseButton->setChecked(false);
-    if (m_scope)
+    if (m_scope) {
         m_scope->setPaused(false);
+        // 断开时如果还停在暂停状态，把暂停期间进入缓冲区、但没画出来的数据补上
+        if (wasPaused && !m_shuttingDown) {
+            m_scope->rebuildFromStore(m_store);
+            m_lastChannelCount = m_store.channelCount();
+        }
+        // 把最后 16 ms 内还没等到渲染定时器的新数据刷出来
+        if (!m_shuttingDown) {
+            m_scope->refresh();
+            m_plotDirty = false;
+        }
+    }
     updateConnectionUi();
 
     if (!m_shuttingDown) {
@@ -789,6 +813,8 @@ void Baud::onFramesReceived(const FrameBatch &frames)
     const int channelCount = m_store.channelCount();
     if (channelCount != m_lastChannelCount) {
         m_scope->setChannelCount(channelCount);
+        // 校准阶段改写通道数时时间轴会从零重来，旧游标已无意义
+        m_scope->clearMarkers();
         rebuildChannelTable(channelCount);
         m_lastChannelCount = channelCount;
     } else if (firstSampleIndex == 0 && m_store.sampleCount() == accepted.size()) {
@@ -808,6 +834,8 @@ void Baud::onTimingUpdated(double period, double jitter)
 {
     m_measuredPeriod = period;
     m_measuredJitter = jitter;
+    if (m_scope)
+        m_scope->setSamplePeriod(period);
     updateStatus();
 }
 
@@ -927,6 +955,7 @@ void Baud::onExportCsv()
     m_exportCursor = m_exportFrom;
     m_exporting = true;
     statusBar()->showMessage(QStringLiteral("正在导出 CSV（导出期间暂停接收）…"), 0);
+    updateConnectionUi();
 
     // 元数据头：与导入端约定一致，便于回读时还原语义
     QStringList meta;
@@ -994,6 +1023,7 @@ void Baud::onExportFinished(bool ok, const QString &message)
     m_exportCursor = 0;
     m_exportFrom = 0;
     m_exportTo = 0;
+    updateConnectionUi();
 }
 
 void Baud::onImportCsv()
@@ -1023,6 +1053,8 @@ void Baud::onImportCsv()
         emit closePortRequested();
     }
     resetSession();
+    updateConnectionUi();
+    statusBar()->showMessage(QStringLiteral("正在导入 CSV…"), 0);
 
     m_importThread = new QThread(this);
     m_importer = new CsvImporter;
@@ -1077,6 +1109,8 @@ void Baud::onImportFinished(bool ok, const QString &message, qint64 rowCount, in
         // 导入数据的周期/抖动直接由文件里的时间列统计
         m_measuredPeriod = m_store.estimatedPeriod();
         m_measuredJitter = m_store.periodJitter();
+        if (m_scope)
+            m_scope->setSamplePeriod(m_measuredPeriod);
         statusBar()->showMessage(QStringLiteral("%1，%2 个通道").arg(message).arg(channelCount), 5000);
         m_scope->resetView();
     } else {
@@ -1090,6 +1124,7 @@ void Baud::onImportFinished(bool ok, const QString &message, qint64 rowCount, in
         m_importThread = nullptr;
     }
     m_importer = nullptr;
+    updateConnectionUi();
 }
 
 void Baud::updateStatus()
@@ -1234,6 +1269,8 @@ void Baud::resetSession()
     m_frameRate = 0;
     m_measuredPeriod = 0.0;
     m_measuredJitter = 0.0;
+    if (m_scope)
+        m_scope->setSamplePeriod(0.0);
     updateStatus();
 }
 
@@ -1246,7 +1283,11 @@ void Baud::stopSerialThread()
         if (m_worker)
             QMetaObject::invokeMethod(m_worker, "closePort", Qt::BlockingQueuedConnection);
         m_serialThread->quit();
-        m_serialThread->wait(3000);
+        if (!m_serialThread->wait(3000)) {
+            // 线程仍未退出时不能让它随父对象析构（QThread 运行中被销毁会 qFatal），
+            // 脱离父子关系，宁可泄漏也不崩。
+            m_serialThread->setParent(nullptr);
+        }
     }
     m_worker = nullptr;
 }
@@ -1262,6 +1303,9 @@ void Baud::stopIoThreads()
         thread->quit();
         if (thread->wait(3000)) {
             thread->deleteLater();
+        } else {
+            // 同上：运行中的 QThread 不能随父对象析构，脱离父子关系避免 qFatal
+            thread->setParent(nullptr);
         }
         thread = nullptr;
     };

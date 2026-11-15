@@ -6,7 +6,6 @@
 #include "ui/Theme.h"
 #include "ui/TimeFormat.h"
 
-#include <QApplication>
 #include <QContextMenuEvent>
 #include <QFont>
 #include <QMenu>
@@ -18,6 +17,31 @@
 #include <limits>
 
 namespace {
+// 数据流长时间中断后，前后两批之间不应该画一条虚假的直线。
+// 超过 max(200 ms, 20 个采样周期) 就插入一个 NaN 点断开折线。
+constexpr double kGapBreakMinSeconds = 0.2;
+constexpr double kGapBreakPeriods = 20.0;
+
+// QCPAxis 的 rangeChanged 也会在程序内 setRange 时触发；用这个守卫区分
+// “代码在跟随最新/自动缩放”和“用户拖动、滚轮缩放”，后者应关闭对应自动模式。
+class ScopedBool {
+public:
+    explicit ScopedBool(bool &flag)
+        : m_flag(flag)
+        , m_previous(flag)
+    {
+        m_flag = true;
+    }
+    ~ScopedBool() { m_flag = m_previous; }
+
+    ScopedBool(const ScopedBool &) = delete;
+    ScopedBool &operator=(const ScopedBool &) = delete;
+
+private:
+    bool &m_flag;
+    bool m_previous;
+};
+
 QString formatValueText(double value)
 {
     return std::isfinite(value) ? QString::number(value, 'g', 6)
@@ -79,6 +103,33 @@ ScopePlot::ScopePlot(QWidget *parent)
     setupStyle();
     setupItems();
     m_measureTimer.start();
+
+    // 用户拖动/滚轮改变 X 范围时关闭跟随最新；改变 Y 范围时关闭自动 Y。
+    // 程序内的跟随刷新通过 m_settingRange 排除，不会误关。
+    connect(xAxis, qOverload<const QCPRange &>(&QCPAxis::rangeChanged), this,
+            [this](const QCPRange &) {
+                syncMarkers();
+                if (m_settingRange)
+                    return;
+                if (m_followLatest) {
+                    m_followLatest = false;
+                    emit followLatestChanged(false);
+                }
+                if (m_measureTimer.hasExpired(250)) {
+                    updateMeasurement();
+                    m_measureTimer.restart();
+                }
+            });
+    connect(yAxis, qOverload<const QCPRange &>(&QCPAxis::rangeChanged), this,
+            [this](const QCPRange &) {
+                if (!m_settingRange)
+                    m_autoY = false;
+            });
+
+    // 边界气泡用绝对像素定位；窗口尺寸/坐标轴边距变化后必须重新贴边，
+    // 否则首次 show()、最大化、拖动分隔条时气泡会留在旧位置。
+    connect(this, &QCustomPlot::afterLayout, this, [this]() { syncMarkers(); });
+
     setChannelCount(0);
 }
 
@@ -95,6 +146,7 @@ void ScopePlot::setupStyle()
     setNoAntialiasingOnDrag(true);
     setMouseTracking(true);
     setToolTip(QStringLiteral(
+        "左右两条竖线是显示缓冲边界：跟随最新时，两边界间距 = 设置的缓冲长度；波形从右边界进入、到左边界移出\n"
         "绘图区滚轮：同时缩放 X/Y；X 轴带滚轮：只缩放 X；Y 轴带滚轮：只缩放 Y\n"
         "X 轴带 / 绘图区双击：固定竖线；双击已有竖线：移除；Y 轴带双击：复位视图\n"
         "左键点竖线设为 A，Shift+左键设为 B；A/B 是测量游标，显示真实时间差，不裁剪波形；右键菜单更多"));
@@ -160,6 +212,7 @@ void ScopePlot::setChannelCount(int count)
     }
 
     rebuildValueLabels(count);
+    hideHover();
     legend->setVisible(count > 0);
     axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
     if (m_hint)
@@ -172,8 +225,10 @@ void ScopePlot::appendFrames(const FrameBatch &frames, qint64 firstSampleIndex)
 {
     if (frames.isEmpty() || m_graphs.isEmpty())
         return;
-    if (frames.first().values.size() != m_graphs.size())
-        return;
+    for (const Frame &frame : frames) {
+        if (frame.values.size() != m_graphs.size())
+            return;
+    }
 
     const int frameCount = frames.size();
     QVector<QCPGraphData> points(frameCount);
@@ -184,6 +239,27 @@ void ScopePlot::appendFrames(const FrameBatch &frames, qint64 firstSampleIndex)
         }
         // 直接构造 QCPGraphData，省去 keys/values 到内部数据结构的二次拷贝
         m_graphs.at(channel)->data()->add(points, true);
+    }
+
+    // 断流后恢复时，用 NaN 点断开折线，避免把空闲区间画成一条斜线。
+    // 周期未知（例如首批只有一个采样点）时不断线，宁可连起来也不要误伤低采样率数据。
+    if (m_latestSample >= 0 && std::isfinite(m_latestTime)) {
+        double period = m_samplePeriod;
+        if (period <= 0.0 && frameCount > 1) {
+            period = (frames.last().t - frames.first().t)
+                     / static_cast<double>(frameCount - 1);
+        }
+        const double gapSeconds = frames.first().t - m_latestTime;
+        const double threshold = std::max(kGapBreakMinSeconds, period * kGapBreakPeriods);
+        if (period > 0.0 && gapSeconds > threshold) {
+            const double gapKey = m_latestTime + gapSeconds * 0.5;
+            for (QCPGraph *graph : m_graphs) {
+                QCPGraphData gap;
+                gap.key = gapKey;
+                gap.value = std::numeric_limits<double>::quiet_NaN();
+                graph->data()->add(gap);
+            }
+        }
     }
 
     m_latestSample = firstSampleIndex + frameCount - 1;
@@ -203,10 +279,13 @@ void ScopePlot::appendFrames(const FrameBatch &frames, qint64 firstSampleIndex)
 
 void ScopePlot::rebuildFromStore(const ChannelStore &store)
 {
-    if (m_graphs.size() != store.channelCount())
+    if (m_graphs.size() != store.channelCount()) {
         setChannelCount(store.channelCount());
+        // 通道数变化通常意味着时间轴重来，旧游标不再有意义
+        clearMarkers();
+    }
 
-    clearData();
+    clearGraphData();
 
     if (store.channelCount() <= 0 || store.sampleCount() <= 0)
         return;
@@ -228,11 +307,34 @@ void ScopePlot::rebuildFromStore(const ChannelStore &store)
     for (int i = 0; i < sampleCount; ++i)
         keys[i] = store.timeAt(from + i);
 
+    // 重建窗口时也按同样的规则断开数据空洞；否则暂停/恢复后，
+    // 实时刷新时已经断开的折线会在同一条记录上重新连起来。
+    QVector<double> gapKeys;
+    if (sampleCount > 1) {
+        double period = m_samplePeriod;
+        if (period <= 0.0)
+            period = (keys.last() - keys.first()) / static_cast<double>(sampleCount - 1);
+        const double threshold = std::max(kGapBreakMinSeconds, period * kGapBreakPeriods);
+        if (period > 0.0 && std::isfinite(threshold)) {
+            for (int i = 1; i < sampleCount; ++i) {
+                const double gap = keys.at(i) - keys.at(i - 1);
+                if (gap > threshold)
+                    gapKeys.append(keys.at(i - 1) + gap * 0.5);
+            }
+        }
+    }
+
     for (int channel = 0; channel < store.channelCount(); ++channel) {
         QVector<double> values(sampleCount);
         for (int i = 0; i < sampleCount; ++i)
             values[i] = store.valueAt(channel, from + i);
         m_graphs.at(channel)->addData(keys, values, true);
+        for (double gapKey : gapKeys) {
+            QCPGraphData gap;
+            gap.key = gapKey;
+            gap.value = std::numeric_limits<double>::quiet_NaN();
+            m_graphs.at(channel)->data()->add(gap);
+        }
     }
 
     m_latestSample = to;
@@ -263,6 +365,14 @@ void ScopePlot::setChannelVisible(int channel, bool visible)
 void ScopePlot::setFollowLatest(bool follow)
 {
     setFollow(follow, follow);
+    if (!follow)
+        return;
+
+    applyWindow();
+    if (!m_paused && m_latestSample >= 0 && m_autoY)
+        refresh();
+    else
+        replot(QCustomPlot::rpQueuedReplot);
 }
 
 void ScopePlot::setPaused(bool paused)
@@ -270,7 +380,21 @@ void ScopePlot::setPaused(bool paused)
     m_paused = paused;
 }
 
+void ScopePlot::setSamplePeriod(double seconds)
+{
+    m_samplePeriod = (std::isfinite(seconds) && seconds > 0.0) ? seconds : 0.0;
+}
+
 void ScopePlot::clearData()
+{
+    clearGraphData();
+    clearMarkers();
+    replot(QCustomPlot::rpQueuedReplot);
+}
+
+// 清空曲线数据并把显示窗口复位到“无数据”状态，但保留用户固定的游标。
+// 暂停恢复时用后者重建最近窗口，不能顺手把用户量好的 A/B 游标丢掉。
+void ScopePlot::clearGraphData()
 {
     for (QCPGraph *graph : m_graphs)
         graph->data()->clear();
@@ -280,12 +404,11 @@ void ScopePlot::clearData()
     setFollow(true, true);
     if (m_hint)
         m_hint->setVisible(true);
-    xAxis->setRange(0, 1.0);
-    yAxis->setRange(-1, 1);
-    clearMarkers();
+    applyWindow();
+    setYRangeProgrammatic(-1, 1);
     hideHover();
+    syncMarkers();
     updateMeasurement();
-    replot(QCustomPlot::rpQueuedReplot);
 }
 
 QColor ScopePlot::channelColor(int channel) const
@@ -298,15 +421,8 @@ void ScopePlot::refresh()
     if (m_paused || m_latestSample < 0)
         return;
 
-    if (m_followLatest) {
-        // 视图窗口以时间（毫秒）表示：左端对齐到“最新时刻 - 窗口长度”
-        const double span = static_cast<double>(m_viewSpan) / 1000.0;
-        double upper = m_latestTime;
-        double lower = upper - span;
-        if (upper <= lower)
-            upper = lower + 1.0;
-        xAxis->setRange(lower, upper);
-    }
+    if (m_followLatest)
+        applyWindow();
 
     if (m_autoY) {
         const QCPRange xRange = xAxis->range();
@@ -330,7 +446,7 @@ void ScopePlot::refresh()
         }
 
         if (!found) {
-            yAxis->setRange(-1, 1);
+            setYRangeProgrammatic(-1, 1);
         } else {
             double lower = yRange.lower;
             double upper = yRange.upper;
@@ -339,7 +455,7 @@ void ScopePlot::refresh()
                 upper += 1.0;
             }
             const double pad = (upper - lower) * 0.05;
-            yAxis->setRange(lower - pad, upper + pad);
+            setYRangeProgrammatic(lower - pad, upper + pad);
         }
     }
 
@@ -351,11 +467,33 @@ void ScopePlot::refresh()
     replot(QCustomPlot::rpQueuedReplot);
 }
 
+// 把跟随窗口对齐到“最新时刻 - 窗口长度”。无数据时 m_latestTime 为 0，
+// 窗口即 [-span, 0]，这样左右边界在连接前就已经在画布上。
+void ScopePlot::applyWindow()
+{
+    const double span = static_cast<double>(m_viewSpan) / 1000.0;
+    const double upper = std::isfinite(m_latestTime) ? m_latestTime : 0.0;
+    setXRangeProgrammatic(upper - span, upper);
+    syncMarkers();
+}
+
+void ScopePlot::setXRangeProgrammatic(double lower, double upper)
+{
+    ScopedBool guard(m_settingRange);
+    xAxis->setRange(lower, upper);
+}
+
+void ScopePlot::setYRangeProgrammatic(double lower, double upper)
+{
+    ScopedBool guard(m_settingRange);
+    yAxis->setRange(lower, upper);
+}
+
 void ScopePlot::resetYRange()
 {
     m_autoY = true;
-    xAxis->setRange(m_latestTime - static_cast<double>(m_viewSpan) / 1000.0, m_latestTime);
-    yAxis->setRange(-1, 1);
+    applyWindow();
+    setYRangeProgrammatic(-1, 1);
     replot(QCustomPlot::rpQueuedReplot);
 }
 
@@ -392,6 +530,11 @@ void ScopePlot::setupItems()
     start.color = QColor("#FF4D5A");
     start.line = createVerticalLine(start.color, false);
     start.label = createBadge(start.color);
+    // 边界线正好落在坐标轴边框上，放到 axes 层并关闭裁剪，避免被坐标轴/边框盖住
+    start.line->setClipToAxisRect(false);
+    start.line->setLayer(QStringLiteral("axes"));
+    start.line->setPen(QPen(start.color, 2.0));
+    start.label->setLayer(QStringLiteral("axes"));
     m_markers.append(start);
 
     Marker end;
@@ -399,6 +542,10 @@ void ScopePlot::setupItems()
     end.color = QColor("#D66BFF");
     end.line = createVerticalLine(end.color, false);
     end.label = createBadge(end.color);
+    end.line->setClipToAxisRect(false);
+    end.line->setLayer(QStringLiteral("axes"));
+    end.line->setPen(QPen(end.color, 2.0));
+    end.label->setLayer(QStringLiteral("axes"));
     m_markers.append(end);
 
     syncMarkers();
@@ -490,19 +637,12 @@ bool ScopePlot::isPlotArea(const QPoint &pos) const
     return axisRect()->rect().contains(pos);
 }
 
-double ScopePlot::boundaryStart() const
-{
-    if (m_latestSample < 0)
-        return 0.0;
-    return m_latestTime - static_cast<double>(m_viewSpan) / 1000.0;
-}
-
 double ScopePlot::markerX(int id) const
 {
     if (id == kStartMarkerId)
-        return boundaryStart();
+        return xAxis->range().lower;
     if (id == kEndMarkerId)
-        return m_latestTime;
+        return xAxis->range().upper;
 
     for (const Marker &marker : m_markers) {
         if (marker.id == id)
@@ -552,32 +692,60 @@ void ScopePlot::syncMarkers()
     const bool hasData = m_latestSample >= 0;
     const QRect rect = axisRect()->rect();
     const int badgeY = rect.bottom() + 24;
+    const QCPRange xRange = xAxis->range();
 
     for (Marker &marker : m_markers) {
-        if (marker.id == kStartMarkerId)
-            marker.x = boundaryStart();
-        else if (marker.id == kEndMarkerId)
-            marker.x = m_latestTime;   // X 轴是时间轴（秒），不能用样本序号
+        const bool isStart = marker.id == kStartMarkerId;
+        const bool isEnd = marker.id == kEndMarkerId;
+        if (isStart)
+            marker.x = xRange.lower;
+        else if (isEnd)
+            marker.x = xRange.upper;   // X 轴是时间轴（秒），不能用样本序号
         setVerticalLineX(marker.line, marker.x);
 
         const double pixelX = xAxis->coordToPixel(marker.x);
-        const bool inView = hasData && pixelX >= rect.left() - 2
-                            && pixelX <= rect.right() + 2;
+        // 左右边界永远可见；用户固定的游标只在数据范围内显示
+        const bool inView = (isStart || isEnd)
+                            || (hasData && pixelX >= rect.left() - 2
+                                && pixelX <= rect.right() + 2);
         marker.line->setVisible(inView);
         marker.label->setVisible(inView);
         if (!inView)
             continue;
 
         const bool measured = marker.id == m_measureA || marker.id == m_measureB;
-        QString text = TimeFormat::formatCompact(marker.x);
-        if (marker.id == m_measureA)
-            text.prepend(QStringLiteral("A "));
+        QString text;
+        if (isStart)
+            text = (m_measureA == marker.id
+                        ? QStringLiteral("A·左界 ")
+                        : (m_measureB == marker.id ? QStringLiteral("B·左界 ")
+                                                   : QStringLiteral("左界 ")));
+        else if (isEnd)
+            text = (m_measureB == marker.id
+                        ? QStringLiteral("B·右界 ")
+                        : (m_measureA == marker.id ? QStringLiteral("A·右界 ")
+                                                   : QStringLiteral("右界 ")));
+        else if (marker.id == m_measureA)
+            text = QStringLiteral("A ");
         else if (marker.id == m_measureB)
-            text.prepend(QStringLiteral("B "));
+            text = QStringLiteral("B ");
+        text += TimeFormat::formatCompact(marker.x);
+
         marker.label->setText(text);
         marker.label->setPen(QPen(measured ? QColor("#F5C451") : marker.color, 1.2));
-        marker.label->position->setCoords(
-            qBound<double>(rect.left(), pixelX, rect.right()), badgeY);
+
+        // 边界气泡贴住左右两端，避免半个气泡跑出控件
+        if (isStart) {
+            marker.label->setPositionAlignment(Qt::AlignLeft | Qt::AlignTop);
+            marker.label->position->setCoords(rect.left() + 2, badgeY);
+        } else if (isEnd) {
+            marker.label->setPositionAlignment(Qt::AlignRight | Qt::AlignTop);
+            marker.label->position->setCoords(rect.right() - 2, badgeY);
+        } else {
+            marker.label->setPositionAlignment(Qt::AlignHCenter | Qt::AlignTop);
+            marker.label->position->setCoords(
+                qBound<double>(rect.left(), pixelX, rect.right()), badgeY);
+        }
     }
 }
 
@@ -682,11 +850,11 @@ void ScopePlot::clearMarkers()
     m_measureB = kEndMarkerId;
     syncMarkers();
     updateMeasurement();
+    replot(QCustomPlot::rpQueuedReplot);
 }
 
 void ScopePlot::syncHover(const QPoint &pos)
 {
-    m_lastHoverPosition = pos;
     const bool onX = isXBand(pos);
     const bool onY = isYBand(pos);
     const bool onPlot = isPlotArea(pos);
@@ -764,9 +932,13 @@ void ScopePlot::updateMeasurement()
     const double toX = markerX(m_measureB);
     QString text;
 
-    if (m_latestSample < 0 || !std::isfinite(fromX) || !std::isfinite(toX)) {
-        text = QStringLiteral(
-            "测量游标：默认 A 窗口起点 → B 最新点（不裁剪波形，等待数据）");
+    if (!std::isfinite(fromX) || !std::isfinite(toX)) {
+        text = QStringLiteral("测量游标：A / B 未定义（等待数据）");
+    } else if (m_latestSample < 0) {
+        // 边界在无数据时已经存在，先显示两个边界的时间，不显示极值统计
+        text = QStringLiteral("测量游标：A 左边界 %1 → B 右边界 %2（等待数据）")
+                   .arg(TimeFormat::format(fromX))
+                   .arg(TimeFormat::format(toX));
     } else {
         const double lower = std::min(fromX, toX);
         const double upper = std::max(fromX, toX);
@@ -839,18 +1011,35 @@ void ScopePlot::setViewSpan(qint64 span)
         return;
     m_viewSpan = clamped;
     emit viewSpanChanged(m_viewSpan);
+
+    const double spanSeconds = static_cast<double>(m_viewSpan) / 1000.0;
+    if (m_followLatest) {
+        // 跟随最新时右端就是最新数据；暂停或还没数据时右端是 0
+        applyWindow();
+    } else {
+        // 手动缩放/拖动后改窗口长度：保持右端不动，把左端拉开/收拢，
+        // 这样边界间距始终等于设置的缓冲长度，而不是等复位后才生效。
+        double upper = xAxis->range().upper;
+        if (!std::isfinite(upper))
+            upper = 0.0;
+        setXRangeProgrammatic(upper - spanSeconds, upper);
+    }
+
     syncMarkers();
     updateMeasurement();
-    if (m_followLatest && !m_paused && m_latestSample >= 0)
+    if (!m_paused && m_latestSample >= 0 && m_autoY)
         refresh();
-    replot(QCustomPlot::rpQueuedReplot);
+    else
+        replot(QCustomPlot::rpQueuedReplot);
 }
 
 void ScopePlot::resetView()
 {
     setFollow(true, true);
-    xAxis->setRange(m_latestTime - static_cast<double>(m_viewSpan) / 1000.0, m_latestTime);
-    yAxis->setRange(-1, 1);
+    applyWindow();
+    setYRangeProgrammatic(-1, 1);
+    syncMarkers();
+    updateMeasurement();
     refresh();
     replot(QCustomPlot::rpQueuedReplot);
 }
@@ -887,10 +1076,13 @@ void ScopePlot::wheelEvent(QWheelEvent *event)
             if (onPlot)
                 yAxis->scaleRange(factor, yAxis->pixelToCoord(pos.y()));
         }
-        setFollow(false, false);
+        // 跟随/自动 Y 的关闭由 rangeChanged 处理：
+        // 只缩 Y 不会停掉 X 跟随，只缩 X 也不会冻结 Y 自动缩放。
         syncMarkers();
-        syncHover(pos);
         updateMeasurement();
+        if (m_autoY && !m_paused && m_latestSample >= 0)
+            refresh();
+        syncHover(pos);
     }
     event->accept();
 }
@@ -898,15 +1090,8 @@ void ScopePlot::wheelEvent(QWheelEvent *event)
 void ScopePlot::mouseMoveEvent(QMouseEvent *event)
 {
     QCustomPlot::mouseMoveEvent(event);
-    const QPoint pos = event->position().toPoint();
-    if (event->buttons() & Qt::LeftButton) {
-        const QPoint delta = pos - m_pressPosition;
-        if (delta.manhattanLength() > QApplication::startDragDistance()
-            && qAbs(delta.x()) >= qAbs(delta.y())) {
-            setFollow(false, m_autoY);
-        }
-    }
-    syncHover(pos);
+    // 拖动改变坐标范围时，QCPAxis::rangeChanged 会自动关闭跟随/自动 Y
+    syncHover(event->position().toPoint());
 }
 
 void ScopePlot::mousePressEvent(QMouseEvent *event)
@@ -925,6 +1110,8 @@ void ScopePlot::mouseReleaseEvent(QMouseEvent *event)
     QCustomPlot::mouseReleaseEvent(event);
     if (isClick && markerAt(pos) >= 0)
         setMeasureEnd(!(event->modifiers() & Qt::ShiftModifier), pos);
+    else
+        updateMeasurement();
 }
 
 void ScopePlot::mouseDoubleClickEvent(QMouseEvent *event)
