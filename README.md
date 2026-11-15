@@ -12,7 +12,8 @@ Baud is a Windows serial-port host application for devices that send data with t
   - **JustFloat** — little-endian `float32` array terminated by `00 00 80 7F`.
   - **FireWater** — comma-separated text lines.
   - **RawData** — raw byte stream, displayed as ASCII or HEX.
-- Real-time plot: dark oscilloscope theme, legend, automatic Y range (until zoomed manually), wheel zoom on both axes, drag to pan, double-click to reset, pause and resume.
+- Real-time plot: dark oscilloscope theme, real-time X axis (automatic Δt estimation) with always-visible buffer boundaries, legend, automatic Y range (until zoomed manually), wheel zoom on both axes, drag to pan, double-click to reset, pause and resume.
+- CSV import/export: **文件 → 导出 CSV…** writes the session as a wide `time_s,ch0,…` table with metadata headers; **文件 → 导入 CSV…** rebuilds the timeline and replays the waveform.
 - Channel table: visibility, color, current value and min/max of recent samples.
 - Send panel: ASCII or HEX input with CR/LF/CRLF line endings.
 - Serial I/O and parsing run in a worker thread; the UI refreshes in batches.
@@ -115,11 +116,12 @@ Baud 是一款 Windows 串口上位机，用于接收、解析并实时绘制采
   - **JustFloat**：小端 `float32` 数组 + 固定帧尾 `00 00 80 7F`。
   - **FireWater**：逗号分隔的 CSV 文本行。
   - **RawData**：原始字节流，按 ASCII 或 HEX 查看。
-- 实时波形：深色示波器风格，图例、自动 Y 轴（手动缩放后关闭，双击恢复）、滚轮缩放 X/Y 轴、拖动、双击复位、暂停/恢复。
+- 实时波形：深色示波器风格，X 轴为真实时间（自动估计 Δt），左右边界始终可见，波形从右边界进入、到左边界移出；图例、自动 Y 轴（手动缩放后关闭，双击恢复）、滚轮缩放 X/Y 轴、拖动、双击复位、暂停/恢复。
 - 通道面板：显示/隐藏、颜色、当前值、最近样本的最小/最大值。
 - 发送栏：ASCII / HEX 输入，支持 CR、LF、CRLF 行尾。
 - 串口收发与解析在独立线程中运行，界面按批次刷新。
 - 每通道环形缓冲最多保留 200,000 个样本。
+- CSV 导入导出：**文件 → 导出 CSV…** 把当前会话导出为带元数据注释头的 `time_s,ch0,…` 宽表；**文件 → 导入 CSV…** 按时间列重建时间轴并回放波形。
 - 检查更新：**帮助 → 检查更新** 查询 GitHub Releases（启动后每日也会自动检查一次）。安装版下载安装包、校验 SHA256 后静默启动安装程序；便携版打开发布页面。
 
 ## 协议说明
@@ -167,7 +169,7 @@ msbuild Baud.slnx /p:Configuration=Release /p:Platform=x64 /m
 1. 连接串口设备，启动 Baud 并刷新串口列表。
 2. 选择端口、波特率与串口参数，选择设备使用的协议，点击 **连接**。
 3. 右侧区域会自动切换：JustFloat / FireWater 显示波形，RawData 显示原始数据监视器。
-4. 波形操作：滚轮缩放 X/Y 轴、拖动平移、双击复位并恢复 Y 轴自动缩放；**暂停/继续** 控制刷新，**清空** 清除已采集数据。
+4. 波形操作：左右两条竖线是显示缓冲边界，间距由“显示缓冲(ms)”控制；滚轮缩放 X/Y 轴、拖动平移、双击复位并恢复 Y 轴自动缩放；**暂停/继续** 控制刷新，**清空** 清除已采集数据。
 5. 在发送栏选择 ASCII 或 HEX、设置行尾，输入内容后点击 **发送**。
 6. **帮助 → 检查更新** 可手动检查 GitHub Releases；启动后每日也会自动检查一次。
 
