@@ -8,6 +8,7 @@
 #include <QTextStream>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 // 每批送回的帧数，兼顾内存占用与信号频率
@@ -88,7 +89,7 @@ void CsvImporter::importFile(const QString &path)
 
         bool ok = false;
         const double time = parts.at(0).trimmed().toDouble(&ok);
-        if (!ok)
+        if (!ok || !std::isfinite(time))
             continue;
 
         Frame frame;
@@ -98,7 +99,7 @@ void CsvImporter::importFile(const QString &path)
         for (int channel = 0; channel < channelCount; ++channel) {
             bool valueOk = false;
             const double value = parts.at(channel + 1).trimmed().toDouble(&valueOk);
-            if (!valueOk) {
+            if (!valueOk || !std::isfinite(value)) {
                 valid = false;
                 break;
             }
