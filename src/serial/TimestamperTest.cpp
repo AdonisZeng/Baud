@@ -271,6 +271,61 @@ int main(int argc, char **argv)
         QFile::remove(path);
     }
 
+    // ---- 7b. 导出握手：open() 之后必须主动请求第一块数据 ----
+    // 真实链路是 needMore -> GUI 线程切片 -> appendChunk；像第 7 节那样直接
+    // 调 appendChunk 会掩盖“open 后一块数据都没被请求”的回归（文件只剩表头）。
+    {
+        const QString path = QDir::tempPath() + "/baud_csv_handshake.csv";
+        QFile::remove(path);
+
+        const int channelCount = 2;
+        const int rowCount = 3;
+        QVector<double> times;
+        QVector<double> values;
+        for (int row = 0; row < rowCount; ++row) {
+            times.append(0.001 * (row + 1));
+            for (int channel = 0; channel < channelCount; ++channel)
+                values.append(row * 10.0 + channel);
+        }
+
+        CsvExporter exporter;
+        bool exportOk = false;
+        bool chunkSent = false;
+        int needMoreCount = 0;
+        QObject::connect(&exporter, &CsvExporter::needMore, [&]() {
+            ++needMoreCount;
+            if (!chunkSent) {
+                chunkSent = true;
+                exporter.appendChunk(times, values);
+            }
+        });
+        QObject::connect(&exporter, &CsvExporter::finished,
+                         [&exportOk](bool ok, const QString &) { exportOk = ok; });
+
+        check(exporter.open(path, QStringLiteral("# Baud Export v1\n"), channelCount),
+              "握手用例：open 成功");
+        check(needMoreCount >= 1 && chunkSent, "open 后立即请求第一块数据");
+        exporter.close();
+        check(exportOk, "握手用例：导出完成");
+
+        int dataRows = 0;
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QStringList lines =
+                QString::fromUtf8(file.readAll()).split(QLatin1Char('\n'));
+            for (const QString &line : lines) {
+                if (!line.isEmpty() && !line.startsWith(QLatin1Char('#'))
+                    && !line.startsWith(QStringLiteral("time_s")))
+                    ++dataRows;
+            }
+            file.close();
+        }
+        check(dataRows == rowCount,
+              QStringLiteral("握手用例：文件数据行数正确（%1）").arg(dataRows));
+
+        QFile::remove(path);
+    }
+
     // ---- 8. 带 UTF-8 BOM 的 CSV 也能正确导入 ----
     {
         const QString path = QDir::tempPath() + "/baud_csv_bom.csv";

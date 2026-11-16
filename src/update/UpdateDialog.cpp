@@ -3,6 +3,8 @@
 
 #include "UpdateDialog.h"
 
+#include "ui/Theme.h"
+
 #include <QDesktopServices>
 #include <QFont>
 #include <QHBoxLayout>
@@ -75,7 +77,6 @@ void UpdateDialog::buildUi()
 
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
-    m_status->setStyleSheet(QStringLiteral("color: #A9B4C0;"));
     m_status->setVisible(false);
 
     QHBoxLayout *buttons = new QHBoxLayout;
@@ -158,7 +159,6 @@ void UpdateDialog::refreshUi()
     m_pageButton->setVisible(false);
     m_secondaryButton->setVisible(true);
     m_secondaryButton->setEnabled(true);
-    m_detail->setStyleSheet(QStringLiteral("color: #C8D2DC;"));
 
     switch (m_state) {
     case State::Checking:
@@ -215,17 +215,30 @@ void UpdateDialog::refreshUi()
     case State::Failed:
         m_headline->setText(m_errorTitle);
         m_detail->setText(m_errorMessage);
-        m_detail->setStyleSheet(QStringLiteral("color: #FF6B6B;"));
         m_pageButton->setText(QStringLiteral("打开发布页面"));
         m_pageButton->setVisible(true);
         m_secondaryButton->setText(QStringLiteral("关闭"));
         break;
     }
 
+    applyTheme();
+
     const QSize targetSize = m_state == State::Available ? QSize(620, 480)
                                                          : QSize(560, 260);
     if (size() != targetSize)
         resize(targetSize);
+}
+
+void UpdateDialog::applyTheme()
+{
+    const Theme::Colors &c = Theme::colors();
+    if (m_status)
+        m_status->setStyleSheet(QStringLiteral("color: %1;").arg(c.headerText.name()));
+    if (m_detail) {
+        m_detail->setStyleSheet(QStringLiteral("color: %1;")
+                                    .arg(m_state == State::Failed ? c.error.name()
+                                                                  : c.textMuted.name()));
+    }
 }
 
 void UpdateDialog::showAndRaise()

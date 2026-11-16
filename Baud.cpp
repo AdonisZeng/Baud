@@ -74,6 +74,14 @@ QString formatValue(double value)
         return QStringLiteral("--");
     return QString::number(value, 'g', 4);
 }
+
+// 通道色块随主题变化，统一从这里生成，避免波形、通道表、测量面板各画一套
+QIcon channelSwatch(int channel)
+{
+    QPixmap swatch(12, 12);
+    swatch.fill(Theme::channelColor(channel));
+    return QIcon(swatch);
+}
 } // namespace
 
 Baud::Baud(QWidget *parent)
@@ -148,6 +156,15 @@ void Baud::buildUi()
                                .arg(QApplication::applicationVersion()));
     });
 
+    // 主题切换放在菜单栏右上角：不占波形工具栏，RawData 页也能用
+    m_themeButton = new QPushButton(menuBar());
+    m_themeButton->setObjectName(QStringLiteral("themeToggle"));
+    m_themeButton->setCursor(Qt::PointingHandCursor);
+    m_themeButton->setFocusPolicy(Qt::NoFocus);
+    menuBar()->setCornerWidget(m_themeButton, Qt::TopRightCorner);
+    connect(m_themeButton, &QPushButton::clicked, this, &Baud::onThemeToggled);
+    updateThemeButton();
+
     QWidget *central = ui.centralWidget;
     QVBoxLayout *centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(8, 8, 8, 8);
@@ -209,30 +226,40 @@ void Baud::buildUi()
 
     m_flowCombo = new QComboBox(serialGroup);
     m_flowCombo->addItem(QStringLiteral("无流控"), static_cast<int>(QSerialPort::NoFlowControl));
-    m_flowCombo->addItem(QStringLiteral("硬件 RTS/CTS"),
-                         static_cast<int>(QSerialPort::HardwareControl));
-    m_flowCombo->addItem(QStringLiteral("软件 XON/XOFF"),
+    m_flowCombo->addItem(QStringLiteral("RTS/CTS"), static_cast<int>(QSerialPort::HardwareControl));
+    m_flowCombo->addItem(QStringLiteral("XON/XOFF"),
                          static_cast<int>(QSerialPort::SoftwareControl));
+    m_flowCombo->setToolTip(QStringLiteral("硬件流控 RTS/CTS，或软件流控 XON/XOFF"));
+
+    // 两列并排后每个下拉框只有一半宽度：统一按内容长度策略，
+    // 避免某个长选项（如 RTS/CTS）把整块面板顶宽。
+    for (QComboBox *combo : {m_dataBitsCombo, m_parityCombo, m_stopBitsCombo, m_flowCombo}) {
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        combo->setMinimumContentsLength(6);
+    }
 
     m_connectButton = new QPushButton(QStringLiteral("连接"), serialGroup);
     m_connectButton->setObjectName(QStringLiteral("primaryButton"));
     m_connectButton->setMinimumHeight(32);
 
+    // 端口/波特率各占一行；数据位/停止位、校验/流控两两一行，少占纵向空间
     serialGrid->addWidget(new QLabel(QStringLiteral("端口"), serialGroup), 0, 0);
-    serialGrid->addWidget(m_portCombo, 0, 1);
-    serialGrid->addWidget(m_refreshPortsButton, 0, 2);
+    serialGrid->addWidget(m_portCombo, 0, 1, 1, 2);
+    serialGrid->addWidget(m_refreshPortsButton, 0, 3);
     serialGrid->addWidget(new QLabel(QStringLiteral("波特率"), serialGroup), 1, 0);
-    serialGrid->addWidget(m_baudCombo, 1, 1, 1, 2);
+    serialGrid->addWidget(m_baudCombo, 1, 1, 1, 3);
     serialGrid->addWidget(new QLabel(QStringLiteral("数据位"), serialGroup), 2, 0);
-    serialGrid->addWidget(m_dataBitsCombo, 2, 1, 1, 2);
+    serialGrid->addWidget(m_dataBitsCombo, 2, 1);
+    serialGrid->addWidget(new QLabel(QStringLiteral("停止位"), serialGroup), 2, 2);
+    serialGrid->addWidget(m_stopBitsCombo, 2, 3);
     serialGrid->addWidget(new QLabel(QStringLiteral("校验"), serialGroup), 3, 0);
-    serialGrid->addWidget(m_parityCombo, 3, 1, 1, 2);
-    serialGrid->addWidget(new QLabel(QStringLiteral("停止位"), serialGroup), 4, 0);
-    serialGrid->addWidget(m_stopBitsCombo, 4, 1, 1, 2);
-    serialGrid->addWidget(new QLabel(QStringLiteral("流控"), serialGroup), 5, 0);
-    serialGrid->addWidget(m_flowCombo, 5, 1, 1, 2);
-    serialGrid->addWidget(m_connectButton, 6, 0, 1, 3);
+    serialGrid->addWidget(m_parityCombo, 3, 1);
+    serialGrid->addWidget(new QLabel(QStringLiteral("流控"), serialGroup), 3, 2);
+    serialGrid->addWidget(m_flowCombo, 3, 3);
+    serialGrid->addWidget(m_connectButton, 4, 0, 1, 4);
     serialGrid->setColumnStretch(1, 1);
+    serialGrid->setColumnStretch(3, 1);
+    serialGrid->setVerticalSpacing(6);
     leftLayout->addWidget(serialGroup, 0);
 
     QGroupBox *protocolGroup = new QGroupBox(QStringLiteral("协议"), left);
@@ -292,6 +319,54 @@ void Baud::buildUi()
     channelLayout->addWidget(m_channelTable);
     leftLayout->addWidget(channelGroup, 1);
 
+    // 测量区间面板：A/B 之间的每通道极值。原先挤在波形下方的小字标签看不清，
+    // 这里单独开一块区域放在通道表下面。
+    QGroupBox *measureGroup = new QGroupBox(QStringLiteral("测量区间（A→B）"), left);
+    QVBoxLayout *measureLayout = new QVBoxLayout(measureGroup);
+    measureLayout->setContentsMargins(10, 14, 10, 10);
+    measureLayout->setSpacing(6);
+
+    // 摘要与 Δt 并排：Δt 是这里最主要的信息，用更大字号，摘要让出宽度
+    QHBoxLayout *measureHeaderLayout = new QHBoxLayout;
+    measureHeaderLayout->setContentsMargins(0, 0, 0, 0);
+    measureHeaderLayout->setSpacing(8);
+
+    m_measureSummary = new QLabel(
+        QStringLiteral("A 左边界  →  B 右边界"), measureGroup);
+    m_measureSummary->setFont(QFont(QStringLiteral("Consolas"), 9));
+    m_measureSummary->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    measureHeaderLayout->addWidget(m_measureSummary, 1);
+
+    m_measureDelta = new QLabel(QStringLiteral("Δt --"), measureGroup);
+    QFont deltaFont(QStringLiteral("Consolas"), 12);
+    deltaFont.setBold(true);
+    m_measureDelta->setFont(deltaFont);
+    m_measureDelta->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_measureDelta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    measureHeaderLayout->addWidget(m_measureDelta, 0);
+
+    measureLayout->addLayout(measureHeaderLayout);
+
+    m_measureTable = new QTableWidget(0, 3, measureGroup);
+    m_measureTable->setHorizontalHeaderLabels(
+        {QStringLiteral("通道"), QStringLiteral("区间最小"), QStringLiteral("区间最大")});
+    m_measureTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_measureTable->setSelectionMode(QAbstractItemView::NoSelection);
+    m_measureTable->setAlternatingRowColors(true);
+    m_measureTable->setShowGrid(false);
+    m_measureTable->verticalHeader()->setVisible(false);
+    m_measureTable->verticalHeader()->setDefaultSectionSize(24);
+    m_measureTable->setFont(QFont(QStringLiteral("Consolas"), 10));
+    QHeaderView *measureHeader = m_measureTable->horizontalHeader();
+    measureHeader->setSectionResizeMode(0, QHeaderView::Fixed);
+    measureHeader->setSectionResizeMode(1, QHeaderView::Stretch);
+    measureHeader->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_measureTable->setColumnWidth(0, 58);
+    // 通道多时表格内部滚动，别把左侧面板顶爆
+    m_measureTable->setMaximumHeight(120);
+    measureLayout->addWidget(m_measureTable);
+    leftLayout->addWidget(measureGroup, 0);
+
     // 右侧波形 / 原始数据区
     QWidget *right = new QWidget(splitter);
     QVBoxLayout *rightLayout = new QVBoxLayout(right);
@@ -335,15 +410,6 @@ void Baud::buildUi()
     m_scope = new ScopePlot(scopePage);
     m_scope->setStore(&m_store);
     scopeLayout->addWidget(m_scope, 1);
-
-    m_measureLabel = new QLabel(
-        QStringLiteral("测量游标：A 左边界 → B 右边界（跟随最新时即显示缓冲；等待数据）"),
-        scopePage);
-    m_measureLabel->setWordWrap(true);
-    m_measureLabel->setMinimumHeight(34);
-    m_measureLabel->setFont(QFont(QStringLiteral("Consolas"), 9));
-    m_measureLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    scopeLayout->addWidget(m_measureLabel);
     m_stack->addWidget(scopePage);
 
     QWidget *rawPage = new QWidget(m_stack);
@@ -446,8 +512,59 @@ void Baud::buildUi()
     });
     connect(m_clearMarkersButton, &QPushButton::clicked,
             m_scope, &ScopePlot::clearMarkers);
-    connect(m_scope, &ScopePlot::measurementChanged,
-            m_measureLabel, &QLabel::setText);
+    // 测量结果直接渲染到左下的独立面板：A/B 摘要 + 大字 Δt + 每通道极值表
+    connect(m_scope, &ScopePlot::measurementChanged, this,
+            [this](const MeasurementInfo &info) {
+                if (!info.hasRange) {
+                    m_measureSummary->setText(QStringLiteral("测量游标：A / B 未定义"));
+                    m_measureDelta->setText(QStringLiteral("Δt --"));
+                } else {
+                    m_measureSummary->setText(QStringLiteral("A %1  →  B %2")
+                                                  .arg(TimeFormat::format(info.from))
+                                                  .arg(TimeFormat::format(info.to)));
+                    // 区间极值按 [min, max] 统计，Δt 也取绝对值，
+                    // 否则 A 设在 B 右侧时会显示负值，与统计方向矛盾
+                    m_measureDelta->setText(
+                        info.hasData ? QStringLiteral("Δt %1").arg(TimeFormat::formatDelta(
+                                           std::fabs(info.to - info.from)))
+                                     : QStringLiteral("Δt 等待数据"));
+                }
+
+                const auto formatStat = [](bool hasData, double value) {
+                    return hasData && std::isfinite(value)
+                               ? QString::number(value, 'g', 6)
+                               : QStringLiteral("--");
+                };
+
+                m_measureTable->setRowCount(info.stats.size());
+                for (int row = 0; row < info.stats.size(); ++row) {
+                    const MeasureStat &stat = info.stats.at(row);
+                    const auto ensureItem = [this, row](int column) {
+                        QTableWidgetItem *item = m_measureTable->item(row, column);
+                        if (!item) {
+                            item = new QTableWidgetItem;
+                            item->setFlags(Qt::ItemIsEnabled);
+                            m_measureTable->setItem(row, column, item);
+                        }
+                        return item;
+                    };
+
+                    QTableWidgetItem *nameItem = ensureItem(0);
+                    nameItem->setText(QStringLiteral("CH%1").arg(stat.channel + 1));
+                    nameItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+                    nameItem->setForeground(Theme::channelColor(stat.channel));
+                    // 行的顺序只包含可见通道，主题切换要按真实通道号重新取色
+                    nameItem->setData(Qt::UserRole, stat.channel);
+
+                    QTableWidgetItem *minItem = ensureItem(1);
+                    minItem->setText(formatStat(stat.hasData, stat.minValue));
+                    minItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+                    QTableWidgetItem *maxItem = ensureItem(2);
+                    maxItem->setText(formatStat(stat.hasData, stat.maxValue));
+                    maxItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                }
+            });
     connect(m_sendButton, &QPushButton::clicked, this, &Baud::onSendClicked);
     connect(m_sendEdit, &QLineEdit::returnPressed, this, &Baud::onSendClicked);
     connect(m_rawModeCombo, &QComboBox::currentIndexChanged,
@@ -997,6 +1114,12 @@ void Baud::onExportNeedMore()
     m_store.readRange(m_exportCursor, to, times, values);
     m_exportCursor = to + 1;
 
+    // 区间被清空/越界时立刻收尾，避免空块在两侧来回空转
+    if (times.isEmpty()) {
+        QMetaObject::invokeMethod(m_exporter, "close", Qt::QueuedConnection);
+        return;
+    }
+
     QMetaObject::invokeMethod(m_exporter, "appendChunk", Qt::QueuedConnection,
                               Q_ARG(QVector<double>, times),
                               Q_ARG(QVector<double>, values));
@@ -1161,10 +1284,8 @@ void Baud::rebuildChannelTable(int channelCount)
         checkItem->setCheckState(Qt::Checked);
         m_channelTable->setItem(channel, 0, checkItem);
 
-        QPixmap swatch(12, 12);
-        swatch.fill(Theme::channelColor(channel));
         QTableWidgetItem *nameItem =
-            new QTableWidgetItem(QIcon(swatch), QStringLiteral("CH%1").arg(channel + 1));
+            new QTableWidgetItem(channelSwatch(channel), QStringLiteral("CH%1").arg(channel + 1));
         nameItem->setFlags(Qt::ItemIsEnabled);
         m_channelTable->setItem(channel, 1, nameItem);
 
@@ -1202,6 +1323,64 @@ void Baud::updateChannelTable()
         m_channelTable->item(channel, 4)->setText(hasRange ? formatValue(maxValue)
                                                            : QStringLiteral("--"));
     }
+}
+
+// 主题切换后只换色块图标，不能 rebuildChannelTable：
+// 那会把用户取消勾选的通道可见性重置回全选。
+void Baud::refreshChannelSwatches()
+{
+    if (!m_channelTable || m_channelTable->rowCount() <= 0)
+        return;
+
+    QSignalBlocker blocker(m_channelTable);
+    for (int channel = 0; channel < m_channelTable->rowCount(); ++channel) {
+        if (QTableWidgetItem *item = m_channelTable->item(channel, 1))
+            item->setIcon(channelSwatch(channel));
+    }
+}
+
+void Baud::updateThemeButton()
+{
+    if (!m_themeButton)
+        return;
+
+    const bool dark = Theme::mode() == Theme::Mode::Dark;
+    m_themeButton->setText(dark ? QStringLiteral("浅色模式") : QStringLiteral("深色模式"));
+    m_themeButton->setToolTip(dark
+                                  ? QStringLiteral("当前：深色主题，点击切换到浅色")
+                                  : QStringLiteral("当前：浅色主题，点击切换到深色"));
+}
+
+void Baud::onThemeToggled()
+{
+    const Theme::Mode next = Theme::mode() == Theme::Mode::Dark ? Theme::Mode::Light
+                                                               : Theme::Mode::Dark;
+    Theme::apply(*qApp, next);
+    Theme::saveMode(next);
+    updateThemeButton();
+
+    if (m_scope)
+        m_scope->applyTheme();
+
+    refreshChannelSwatches();
+
+    // 通道色块是图标，表内文字靠全局样式表刷新；测量面板的通道色需要重画一次
+    if (m_measureTable) {
+        for (int row = 0; row < m_measureTable->rowCount(); ++row) {
+            QTableWidgetItem *item = m_measureTable->item(row, 0);
+            if (!item)
+                continue;
+            const int channel = item->data(Qt::UserRole).toInt();
+            item->setForeground(Theme::channelColor(channel));
+        }
+    }
+
+    if (m_updateDialog)
+        m_updateDialog->applyTheme();
+
+    statusBar()->showMessage(next == Theme::Mode::Dark ? QStringLiteral("已切换到深色主题")
+                                                       : QStringLiteral("已切换到浅色主题"),
+                             2000);
 }
 
 void Baud::appendRawData(const QByteArray &bytes)

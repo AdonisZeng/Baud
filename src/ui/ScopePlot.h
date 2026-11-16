@@ -10,6 +10,7 @@
 
 #include <QColor>
 #include <QElapsedTimer>
+#include <QMetaType>
 #include <QPoint>
 #include <QString>
 #include <QVector>
@@ -18,6 +19,27 @@ class QContextMenuEvent;
 class QEvent;
 class QMouseEvent;
 class QWheelEvent;
+
+// 单个通道在测量区间 [A, B] 内的极值（只统计可见通道）
+struct MeasureStat {
+    int channel = 0;
+    bool hasData = false;
+    double minValue = 0.0;
+    double maxValue = 0.0;
+};
+
+// 一次测量结果：A/B 时间 + 各可见通道极值
+struct MeasurementInfo {
+    bool hasRange = false;   // A/B 都是有效时间坐标
+    bool hasData = false;    // 至少已收到一个采样点
+    double from = 0.0;       // A（秒）
+    double to = 0.0;         // B（秒）
+    QVector<MeasureStat> stats;
+};
+
+// 目前是 GUI 线程内直连，走队列连接前必须先注册，这里提前声明
+Q_DECLARE_METATYPE(MeasureStat)
+Q_DECLARE_METATYPE(MeasurementInfo)
 
 // 基于 QCustomPlot 的实时波形控件
 class ScopePlot : public QCustomPlot {
@@ -41,15 +63,16 @@ public:
     void setSamplePeriod(double seconds);
     void setStore(const ChannelStore *store);
     void clearData();
-    QColor channelColor(int channel) const;
     qint64 viewSpan() const;
 
 signals:
     void viewSpanChanged(qint64 spanMs);
     void followLatestChanged(bool follow);
-    void measurementChanged(const QString &text);
+    void measurementChanged(const MeasurementInfo &info);
 
 public slots:
+    // 按当前主题重新着色（背景、坐标轴、网格、游标、悬停、图例、曲线）
+    void applyTheme();
     void refresh();
     void setViewSpan(qint64 span);
     void resetView();

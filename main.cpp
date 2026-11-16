@@ -24,7 +24,8 @@ int main(int argc, char *argv[])
     qRegisterMetaType<ProtocolMode>("ProtocolMode");
     qRegisterMetaType<SerialSettings>("SerialSettings");
 
-    Theme::apply(app);
+    // 主题必须在窗口构造前应用：ScopePlot 创建时就要按当前主题取色
+    Theme::apply(app, Theme::loadMode());
 
     Baud window;
     window.show();

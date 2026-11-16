@@ -12,9 +12,10 @@ Baud is a Windows serial-port host application for devices that send data with t
   - **JustFloat** — little-endian `float32` array terminated by `00 00 80 7F`.
   - **FireWater** — comma-separated text lines.
   - **RawData** — raw byte stream, displayed as ASCII or HEX.
-- Real-time plot: dark oscilloscope theme, real-time X axis (automatic Δt estimation) with always-visible buffer boundaries, legend, automatic Y range (until zoomed manually), wheel zoom on both axes, drag to pan, double-click to reset, pause and resume.
+- Real-time plot: dark and light themes (toggle at the top-right of the menu bar), real-time X axis (automatic Δt estimation) with always-visible buffer boundaries, legend, automatic Y range (until zoomed manually), wheel zoom on both axes, drag to pan, double-click to reset, pause and resume.
 - CSV import/export: **文件 → 导出 CSV…** writes the session as a wide `time_s,ch0,…` table with metadata headers; **文件 → 导入 CSV…** rebuilds the timeline and replays the waveform.
 - Channel table: visibility, color, current value and min/max of recent samples.
+- Measurement panel (left column, below the channel table): Δt between the A/B cursors plus per-channel min/max inside that interval.
 - Send panel: ASCII or HEX input with CR/LF/CRLF line endings.
 - Serial I/O and parsing run in a worker thread; the UI refreshes in batches.
 - Ring buffer keeps up to 200,000 samples per channel.
@@ -116,8 +117,9 @@ Baud 是一款 Windows 串口上位机，用于接收、解析并实时绘制采
   - **JustFloat**：小端 `float32` 数组 + 固定帧尾 `00 00 80 7F`。
   - **FireWater**：逗号分隔的 CSV 文本行。
   - **RawData**：原始字节流，按 ASCII 或 HEX 查看。
-- 实时波形：深色示波器风格，X 轴为真实时间（自动估计 Δt），左右边界始终可见，波形从右边界进入、到左边界移出；图例、自动 Y 轴（手动缩放后关闭，双击恢复）、滚轮缩放 X/Y 轴、拖动、双击复位、暂停/恢复。
+- 实时波形：深色 / 浅色主题可切换（菜单栏右上角），X 轴为真实时间（自动估计 Δt），左右边界始终可见，波形从右边界进入、到左边界移出；图例、自动 Y 轴（手动缩放后关闭，双击恢复）、滚轮缩放 X/Y 轴、拖动、双击复位、暂停/恢复。
 - 通道面板：显示/隐藏、颜色、当前值、最近样本的最小/最大值。
+- 测量区间面板（左侧通道表下方）：显示 A/B 游标之间的 Δt，以及该区间内每个可见通道的最小/最大值。
 - 发送栏：ASCII / HEX 输入，支持 CR、LF、CRLF 行尾。
 - 串口收发与解析在独立线程中运行，界面按批次刷新。
 - 每通道环形缓冲最多保留 200,000 个样本。

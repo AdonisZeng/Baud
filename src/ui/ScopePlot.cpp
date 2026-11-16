@@ -102,6 +102,7 @@ ScopePlot::ScopePlot(QWidget *parent)
 {
     setupStyle();
     setupItems();
+    applyTheme();   // 此时游标/气泡已创建，统一按当前主题刷一遍
     m_measureTimer.start();
 
     // 用户拖动/滚轮改变 X 范围时关闭跟随最新；改变 Y 范围时关闭自动 Y。
@@ -135,8 +136,6 @@ ScopePlot::ScopePlot(QWidget *parent)
 
 void ScopePlot::setupStyle()
 {
-    setBackground(QBrush(QColor("#0F1419")));
-    axisRect()->setBackground(QBrush(QColor("#121820")));
     setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
     setPlottingHint(QCP::phFastPolylines, true);
     setNotAntialiasedElements(QCP::aePlottables);
@@ -157,26 +156,6 @@ void ScopePlot::setupStyle()
     xAxis->setRange(0, 1.0);
     yAxis->setRange(-1, 1);
 
-    const QColor tickColor("#A9B4C0");
-    const QColor labelColor("#C8D2DC");
-    const QColor gridColor(255, 255, 255, 28);
-    const QColor zeroLineColor(255, 255, 255, 60);
-
-    xAxis->setTickLabelColor(tickColor);
-    yAxis->setTickLabelColor(tickColor);
-    xAxis->setLabelColor(labelColor);
-    yAxis->setLabelColor(labelColor);
-    xAxis->setBasePen(QPen(QColor(255, 255, 255, 70)));
-    yAxis->setBasePen(QPen(QColor(255, 255, 255, 70)));
-    xAxis->setTickPen(QPen(QColor(255, 255, 255, 50)));
-    yAxis->setTickPen(QPen(QColor(255, 255, 255, 50)));
-    xAxis->grid()->setPen(QPen(gridColor, 1));
-    yAxis->grid()->setPen(QPen(gridColor, 1));
-    xAxis->grid()->setSubGridVisible(false);
-    yAxis->grid()->setSubGridVisible(false);
-    xAxis->grid()->setZeroLinePen(QPen(zeroLineColor, 1, Qt::DashLine));
-    yAxis->grid()->setZeroLinePen(QPen(zeroLineColor, 1, Qt::DashLine));
-
     const QFont tickFont(QStringLiteral("Segoe UI"), 8);
     xAxis->setTickLabelFont(tickFont);
     yAxis->setTickLabelFont(tickFont);
@@ -184,12 +163,85 @@ void ScopePlot::setupStyle()
     yAxis->setLabelFont(QFont(QStringLiteral("Microsoft YaHei UI"), 9));
 
     legend->setVisible(true);
-    legend->setBrush(QBrush(QColor(18, 24, 32, 210)));
-    legend->setBorderPen(QPen(QColor(255, 255, 255, 45)));
-    legend->setTextColor(QColor("#C8D2DC"));
     legend->setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 8));
     legend->setRowSpacing(2);
     axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
+}
+
+// QCustomPlot 不会跟随 QApplication 的 palette 变色：背景、坐标轴、网格、图例、
+// 游标、悬停线、值标签都要在这里按当前主题重新着色。
+void ScopePlot::applyTheme()
+{
+    const Theme::Colors &c = Theme::colors();
+
+    setBackground(QBrush(c.plotCanvas));
+    axisRect()->setBackground(QBrush(c.plotArea));
+
+    xAxis->setTickLabelColor(c.tickText);
+    yAxis->setTickLabelColor(c.tickText);
+    xAxis->setLabelColor(c.axisLabel);
+    yAxis->setLabelColor(c.axisLabel);
+    xAxis->setBasePen(QPen(c.axisLine));
+    yAxis->setBasePen(QPen(c.axisLine));
+    xAxis->setTickPen(QPen(c.axisTick));
+    yAxis->setTickPen(QPen(c.axisTick));
+    xAxis->grid()->setPen(QPen(c.gridLine, 1));
+    yAxis->grid()->setPen(QPen(c.gridLine, 1));
+    xAxis->grid()->setSubGridVisible(false);
+    yAxis->grid()->setSubGridVisible(false);
+    xAxis->grid()->setZeroLinePen(QPen(c.zeroLine, 1, Qt::DashLine));
+    yAxis->grid()->setZeroLinePen(QPen(c.zeroLine, 1, Qt::DashLine));
+
+    legend->setBrush(QBrush(c.legendBackground));
+    legend->setBorderPen(QPen(c.legendBorder));
+    legend->setTextColor(c.axisLabel);
+
+    if (m_hint)
+        m_hint->setColor(c.hint);
+
+    if (m_hoverVertical)
+        m_hoverVertical->setPen(QPen(c.hover, 1.0, Qt::DashLine));
+    if (m_hoverHorizontal)
+        m_hoverHorizontal->setPen(QPen(c.hover, 1.0, Qt::DashLine));
+    for (QCPItemText *badge : {m_hoverXBadge, m_hoverYBadge}) {
+        if (!badge)
+            continue;
+        badge->setColor(c.badgeText);
+        badge->setPen(QPen(c.hover, 1));   // 边框也要跟随主题，否则浅色下仍是深色浅灰
+        badge->setBrush(QBrush(c.badgeFill));
+    }
+
+    for (int channel = 0; channel < m_graphs.size(); ++channel)
+        m_graphs.at(channel)->setPen(QPen(Theme::channelColor(channel), 1.0));
+
+    for (int channel = 0; channel < m_valueLabels.size(); ++channel) {
+        QCPItemText *label = m_valueLabels.at(channel);
+        label->setColor(Theme::channelColor(channel));
+        label->setBrush(QBrush(c.valueLabelFill));
+    }
+
+    for (Marker &marker : m_markers) {
+        const bool isStart = marker.id == kStartMarkerId;
+        const bool isEnd = marker.id == kEndMarkerId;
+        if (isStart)
+            marker.color = c.markerStart;
+        else if (isEnd)
+            marker.color = c.markerEnd;
+        else if (marker.id >= 0)
+            marker.color = c.markerDefault;
+
+        if (marker.line)
+            marker.line->setPen(QPen(marker.color, (isStart || isEnd) ? 2.0 : 1.4,
+                                     Qt::SolidLine));
+        if (marker.label) {
+            marker.label->setColor(c.badgeText);
+            marker.label->setBrush(QBrush(c.badgeFill));
+        }
+    }
+
+    // 气泡边框的“测量中”高亮色由 syncMarkers 决定，刷完配色再同步一次
+    syncMarkers();
+    replot(QCustomPlot::rpQueuedReplot);
 }
 
 void ScopePlot::setChannelCount(int count)
@@ -411,11 +463,6 @@ void ScopePlot::clearGraphData()
     updateMeasurement();
 }
 
-QColor ScopePlot::channelColor(int channel) const
-{
-    return Theme::channelColor(channel);
-}
-
 void ScopePlot::refresh()
 {
     if (m_paused || m_latestSample < 0)
@@ -499,22 +546,24 @@ void ScopePlot::resetYRange()
 
 void ScopePlot::setupItems()
 {
+    const Theme::Colors &c = Theme::colors();
+
     m_hint = new QCPItemText(this);
     m_hint->setText(QStringLiteral("连接串口后开始接收波形"));
     m_hint->setPositionAlignment(Qt::AlignCenter);
     m_hint->position->setType(QCPItemPosition::ptAxisRectRatio);
     m_hint->position->setCoords(0.5, 0.5);
     m_hint->setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 11));
-    m_hint->setColor(QColor("#7E8DA0"));
+    m_hint->setColor(c.hint);
     m_hint->setSelectable(false);
     m_hint->setClipToAxisRect(false);
 
-    m_hoverVertical = createVerticalLine(QColor("#9AA7B4"), true);
+    m_hoverVertical = createVerticalLine(c.hover, true);
     m_hoverVertical->setVisible(false);
     m_hoverHorizontal = new QCPItemLine(this);
     m_hoverHorizontal->setSelectable(false);
     m_hoverHorizontal->setClipToAxisRect(true);
-    m_hoverHorizontal->setPen(QPen(QColor("#9AA7B4"), 1, Qt::DashLine));
+    m_hoverHorizontal->setPen(QPen(c.hover, 1, Qt::DashLine));
     for (QCPItemPosition *position : {m_hoverHorizontal->start, m_hoverHorizontal->end}) {
         position->setTypeX(QCPItemPosition::ptAxisRectRatio);
         position->setTypeY(QCPItemPosition::ptPlotCoords);
@@ -522,12 +571,12 @@ void ScopePlot::setupItems()
         position->setAxisRect(axisRect());
     }
     m_hoverHorizontal->setVisible(false);
-    m_hoverXBadge = createBadge(QColor("#9AA7B4"));
-    m_hoverYBadge = createBadge(QColor("#9AA7B4"));
+    m_hoverXBadge = createBadge(c.hover);
+    m_hoverYBadge = createBadge(c.hover);
 
     Marker start;
     start.id = kStartMarkerId;
-    start.color = QColor("#FF4D5A");
+    start.color = c.markerStart;
     start.line = createVerticalLine(start.color, false);
     start.label = createBadge(start.color);
     // 边界线正好落在坐标轴边框上，放到 axes 层并关闭裁剪，避免被坐标轴/边框盖住
@@ -539,7 +588,7 @@ void ScopePlot::setupItems()
 
     Marker end;
     end.id = kEndMarkerId;
-    end.color = QColor("#D66BFF");
+    end.color = c.markerEnd;
     end.line = createVerticalLine(end.color, false);
     end.label = createBadge(end.color);
     end.line->setClipToAxisRect(false);
@@ -574,9 +623,10 @@ QCPItemText *ScopePlot::createBadge(const QColor &color)
     badge->setClipToAxisRect(false);
     badge->position->setType(QCPItemPosition::ptAbsolute);
     badge->setFont(QFont(QStringLiteral("Segoe UI"), 8));
-    badge->setColor(QColor("#EDF2F7"));
+    const Theme::Colors &theme = Theme::colors();
+    badge->setColor(theme.badgeText);
     badge->setPen(QPen(color, 1));
-    badge->setBrush(QBrush(QColor(15, 20, 25, 235)));
+    badge->setBrush(QBrush(theme.badgeFill));
     badge->setPadding(QMargins(4, 2, 4, 2));
     badge->setPositionAlignment(Qt::AlignHCenter | Qt::AlignTop);
     badge->setVisible(false);
@@ -610,7 +660,7 @@ void ScopePlot::rebuildValueLabels(int count)
         label->setFont(QFont(QStringLiteral("Segoe UI"), 8));
         label->setColor(Theme::channelColor(channel));
         label->setPen(Qt::NoPen);
-        label->setBrush(QBrush(QColor(15, 20, 25, 210)));
+        label->setBrush(QBrush(Theme::colors().valueLabelFill));
         label->setPadding(QMargins(3, 1, 3, 1));
         label->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
         label->setVisible(false);
@@ -732,7 +782,8 @@ void ScopePlot::syncMarkers()
         text += TimeFormat::formatCompact(marker.x);
 
         marker.label->setText(text);
-        marker.label->setPen(QPen(measured ? QColor("#F5C451") : marker.color, 1.2));
+        marker.label->setPen(
+            QPen(measured ? Theme::colors().measureHighlight : marker.color, 1.2));
 
         // 边界气泡贴住左右两端，避免半个气泡跑出控件
         if (isStart) {
@@ -764,7 +815,7 @@ void ScopePlot::addFixedMarker(double x)
     } else {
         marker.x = x;
     }
-    marker.color = QColor("#E6EDF5");
+    marker.color = Theme::colors().markerDefault;
     marker.line = createVerticalLine(marker.color, false);
     marker.label = createBadge(marker.color);
     m_markers.append(marker);
@@ -928,39 +979,29 @@ void ScopePlot::hideHover()
 
 void ScopePlot::updateMeasurement()
 {
-    const double fromX = markerX(m_measureA);
-    const double toX = markerX(m_measureB);
-    QString text;
+    MeasurementInfo info;
+    info.from = markerX(m_measureA);
+    info.to = markerX(m_measureB);
+    info.hasRange = std::isfinite(info.from) && std::isfinite(info.to);
+    info.hasData = m_latestSample >= 0;
 
-    if (!std::isfinite(fromX) || !std::isfinite(toX)) {
-        text = QStringLiteral("测量游标：A / B 未定义（等待数据）");
-    } else if (m_latestSample < 0) {
-        // 边界在无数据时已经存在，先显示两个边界的时间，不显示极值统计
-        text = QStringLiteral("测量游标：A 左边界 %1 → B 右边界 %2（等待数据）")
-                   .arg(TimeFormat::format(fromX))
-                   .arg(TimeFormat::format(toX));
-    } else {
-        const double lower = std::min(fromX, toX);
-        const double upper = std::max(fromX, toX);
-        text = QStringLiteral("A %1 → B %2    Δt %3")
-                   .arg(TimeFormat::format(fromX))
-                   .arg(TimeFormat::format(toX))
-                   .arg(TimeFormat::formatDelta(upper - lower));
+    if (info.hasRange && info.hasData) {
+        const double lower = std::min(info.from, info.to);
+        const double upper = std::max(info.from, info.to);
 
-        QString stats;
         for (int channel = 0; channel < m_graphs.size(); ++channel) {
             if (!m_graphs.at(channel)->visible())
                 continue;
-            bool found = false;
-            double minValue = 0.0;
-            double maxValue = 0.0;
+
+            MeasureStat stat;
+            stat.channel = channel;
             if (m_store && channel < m_store->channelCount()) {
                 // 直接用环形缓冲统计，视窗外未加载到 QCPGraph 的点也能参与
                 const qint64 fromIndex = m_store->indexAtTime(lower);
                 const qint64 toIndex = m_store->indexAtTime(upper);
                 if (fromIndex >= 0 && toIndex >= fromIndex)
-                    found = m_store->rangeMinMax(channel, fromIndex, toIndex,
-                                                 minValue, maxValue);
+                    stat.hasData = m_store->rangeMinMax(channel, fromIndex, toIndex,
+                                                        stat.minValue, stat.maxValue);
             } else {
                 const auto data = m_graphs.at(channel)->data();
                 const auto begin = data->findBegin(lower, false);
@@ -968,30 +1009,37 @@ void ScopePlot::updateMeasurement()
                 for (auto it = begin; it != end; ++it) {
                     if (!std::isfinite(it->value))
                         continue;
-                    if (!found) {
-                        minValue = maxValue = it->value;
-                        found = true;
+                    if (!stat.hasData) {
+                        stat.minValue = stat.maxValue = it->value;
+                        stat.hasData = true;
                     } else {
-                        minValue = std::min(minValue, it->value);
-                        maxValue = std::max(maxValue, it->value);
+                        stat.minValue = std::min(stat.minValue, it->value);
+                        stat.maxValue = std::max(stat.maxValue, it->value);
                     }
                 }
             }
-            if (!stats.isEmpty())
-                stats.append(QStringLiteral("   "));
-            stats.append(found ? QStringLiteral("CH%1 [%2, %3]")
-                                     .arg(channel + 1)
-                                     .arg(formatValueText(minValue))
-                                     .arg(formatValueText(maxValue))
-                               : QStringLiteral("CH%1 [--]").arg(channel + 1));
+            info.stats.append(stat);
         }
-        text.append(QLatin1Char('\n'));
-        text.append(stats.isEmpty() ? QStringLiteral("当前无可见通道") : stats);
     }
 
-    if (text != m_lastMeasurement) {
-        m_lastMeasurement = text;
-        emit measurementChanged(text);
+    // 只有内容变化才发信号：刷新期间可能 16 ms 一次，
+    // 面板不必每帧重排表格。
+    QString key = QStringLiteral("%1|%2|%3|%4")
+                      .arg(info.hasRange)
+                      .arg(info.hasData)
+                      .arg(info.from, 0, 'g', 12)
+                      .arg(info.to, 0, 'g', 12);
+    for (const MeasureStat &stat : info.stats) {
+        key += QLatin1Char('|');
+        key += QString::number(stat.channel);
+        key += QLatin1Char(':');
+        key += stat.hasData ? QString::number(stat.minValue, 'g', 12) : QStringLiteral("-");
+        key += QLatin1Char(',');
+        key += stat.hasData ? QString::number(stat.maxValue, 'g', 12) : QStringLiteral("-");
+    }
+    if (key != m_lastMeasurement) {
+        m_lastMeasurement = key;
+        emit measurementChanged(info);
     }
 }
 

@@ -70,6 +70,7 @@ private slots:
     void onImportFrames(const FrameBatch &frames);
     void onImportFinished(bool ok, const QString &message, qint64 rowCount, int channelCount);
     void onTimingUpdated(double period, double jitter);
+    void onThemeToggled();
 
 private:
     void buildUi();
@@ -80,6 +81,8 @@ private:
     void updateStatus();
     void rebuildChannelTable(int channelCount);
     void updateChannelTable();
+    void refreshChannelSwatches();
+    void updateThemeButton();
     void appendRawData(const QByteArray &bytes);
     void resetSession();
     void stopSerialThread();
@@ -99,7 +102,10 @@ private:
     QSpinBox *m_viewSpanSpin = nullptr;
     QPushButton *m_followButton = nullptr;
     QPushButton *m_clearMarkersButton = nullptr;
-    QLabel *m_measureLabel = nullptr;
+    QLabel *m_measureSummary = nullptr;
+    QLabel *m_measureDelta = nullptr;
+    QTableWidget *m_measureTable = nullptr;
+    QPushButton *m_themeButton = nullptr;
 
     QComboBox *m_portCombo = nullptr;
     QComboBox *m_baudCombo = nullptr;

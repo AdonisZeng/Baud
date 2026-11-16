@@ -20,6 +20,8 @@ public:
 
     // automatic 为 true 时，仅在发现新版本后显示
     void startCheck(bool automatic);
+    // 主题切换后重新着色（对话框内有两处内联颜色的 QLabel）
+    void applyTheme();
 
 signals:
     void installLaunched();
