@@ -2,7 +2,8 @@
 # Copyright (C) 2026 AdonisZeng
 #
 # 独立自测脚本：编译并运行不依赖串口硬件的单元测试。
-# 覆盖：帧时间戳重建、采样周期估计、ChannelStore 时间轴与 CSV 导入导出往返。
+# 覆盖：帧时间戳重建、采样周期估计、ChannelStore 时间轴，
+# 以及 CSV / Markdown / 精简 Markdown 导出与 CSV 导入往返。
 #
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File scripts\run-selftest.ps1
@@ -34,7 +35,7 @@ New-Item -ItemType Directory -Path $buildDir | Out-Null
 
 # moc 生成 Q_OBJECT 类的元对象代码
 $moc = Join-Path $QtPath 'bin\moc.exe'
-foreach ($header in @('src\io\CsvExporter.h', 'src\io\CsvImporter.h')) {
+foreach ($header in @('src\io\DataExporter.h', 'src\io\CsvImporter.h')) {
     $name = [System.IO.Path]::GetFileNameWithoutExtension($header)
     & $moc (Join-Path $repoRoot $header) -o (Join-Path $buildDir "moc_$name.cpp")
     if ($LASTEXITCODE -ne 0) {
@@ -48,11 +49,11 @@ $sources = @(
     'src\model\ChannelStore.cpp',
     'src\protocol\JustFloatParser.cpp',
     'src\protocol\FireWaterParser.cpp',
-    'src\io\CsvExporter.cpp',
+    'src\io\DataExporter.cpp',
     'src\io\CsvImporter.cpp'
 ) | ForEach-Object { Join-Path $repoRoot $_ }
 
-$sources += (Join-Path $buildDir 'moc_CsvExporter.cpp')
+$sources += (Join-Path $buildDir 'moc_DataExporter.cpp')
 $sources += (Join-Path $buildDir 'moc_CsvImporter.cpp')
 
 $exePath = Join-Path $buildDir 'BaudSelfTest.exe'

@@ -59,7 +59,7 @@
     <QtMoc Include="Baud.h">
       <Filter>Header Files</Filter>
     </QtMoc>
-    <QtMoc Include="src\io\CsvExporter.h">
+    <QtMoc Include="src\io\DataExporter.h">
       <Filter>IO</Filter>
     </QtMoc>
     <QtMoc Include="src\io\CsvImporter.h">
@@ -86,7 +86,7 @@
     <ClCompile Include="main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\io\CsvExporter.cpp">
+    <ClCompile Include="src\io\DataExporter.cpp">
       <Filter>IO</Filter>
     </ClCompile>
     <ClCompile Include="src\io\CsvImporter.cpp">
@@ -150,6 +150,9 @@
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="src\ui\TimeFormat.h">
+      <Filter>UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ui\ValueFormat.h">
       <Filter>UI</Filter>
     </ClInclude>
     <ClInclude Include="src\ui\Theme.h">

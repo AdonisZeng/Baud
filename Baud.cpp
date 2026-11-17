@@ -3,12 +3,13 @@
 
 #include "Baud.h"
 
-#include "io/CsvExporter.h"
+#include "io/DataExporter.h"
 #include "io/CsvImporter.h"
 #include "serial/SerialWorker.h"
 #include "ui/ScopePlot.h"
 #include "ui/Theme.h"
 #include "ui/TimeFormat.h"
+#include "ui/ValueFormat.h"
 #include "update/UpdateChecker.h"
 #include "update/UpdateDialog.h"
 
@@ -19,6 +20,8 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFont>
 #include <QGridLayout>
@@ -46,6 +49,7 @@
 #include <QStyle>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTextBrowser>
 #include <QTextCursor>
 #include <QThread>
 #include <QTimer>
@@ -68,11 +72,110 @@ QString protocolDisplayName(ProtocolMode mode)
     return QStringLiteral("Unknown");
 }
 
-QString formatValue(double value)
+// 操作指南正文：原先塞在波形控件的 tooltip 里，悬停即弹一大段文字太吵，
+// 现在收进“帮助 → 操作指南”。不写死颜色，跟随当前主题的前景色。
+QString userGuideHtml()
 {
-    if (!std::isfinite(value))
-        return QStringLiteral("--");
-    return QString::number(value, 'g', 4);
+    // 用 fromUtf8 而不是 QStringLiteral(R"(...)" )：后者展开成 u"" R"(...)"，
+    // 窄/宽字面量拼接是 MSVC 扩展，换 GCC/Clang 编不过。
+    return QString::fromUtf8(R"(<!DOCTYPE html>
+<html><body>
+<h2>操作指南</h2>
+
+<h3>连接与协议</h3>
+<ul>
+<li>选择端口和波特率后点“连接”；数据位 / 校验 / 停止位 / 流控按设备配置填写。</li>
+<li><b>JustFloat / FireWater</b> 会解析成波形；<b>RawData</b> 不解析数值，右侧显示原始字节（ASCII 或 HEX）。</li>
+<li>切换协议会清空当前会话，避免两种协议的数据混在同一份缓冲里。</li>
+<li>串口列表每 2 秒自动刷新，也可以点端口输入框右侧的刷新按钮。</li>
+</ul>
+
+<h3>波形区交互</h3>
+<ul>
+<li>滚轮：绘图区内同时缩放 X/Y；在 X 轴刻度带只缩放 X；在 Y 轴刻度带只缩放 Y。</li>
+<li>左键拖动：平移视图（会关闭“跟随最新”和自动 Y 缩放）。</li>
+<li>双击：绘图区或 X 轴带固定一根竖线；双击已有竖线将其移除；Y 轴带双击复位视图。</li>
+<li>单击竖线设为测量起点 A，Shift+单击设为终点 B；A/B 只用于测量，不裁剪波形。</li>
+<li>右键菜单：固定 / 移除竖线、设为 A / B、清除手动游标、复位视图。</li>
+<li>左右两条彩色竖线是显示缓冲边界：跟随最新时，两边界间距等于“显示缓冲(ms)”；波形从右边界进入、到左边界移出。</li>
+<li>“跟随最新”恢复自动跟随与自动 Y；暂停时波形停止刷新，继续后自动补齐。</li>
+</ul>
+
+<h3>通道与测量</h3>
+<ul>
+<li>通道编号从 <b>CH0</b> 开始（与协议里的 ch0 对应）。通道面板可勾选显示 / 隐藏。</li>
+<li>通道面板的当前值、最小值、最大值为最近 1000 点统计；鼠标悬停单元格可查看完整精度。</li>
+<li>测量区间（A→B）面板显示 Δt 以及每个可见通道在该区间内的最小 / 最大值。</li>
+</ul>
+
+<h3>发送</h3>
+<ul>
+<li>ASCII 或 HEX 发送，可选 CR / LF / CRLF 行尾；HEX 允许空格、逗号和 0x 前缀。</li>
+<li>USB-TTL 把 TX 与 RX 短接即可做回环自测。</li>
+</ul>
+
+<h3>导入与导出</h3>
+<ul>
+<li><b>文件 → 导出数据 → CSV</b>：宽表 <code>time_s,ch0,…</code>，带 # 注释元数据，Excel / pandas 可直接打开。</li>
+<li><b>Markdown</b>：同样的逐点数据写成 Markdown 表格，便于粘贴到文档或对话里。</li>
+<li><b>精简 Markdown</b>：连续不变的采样合并成时间段（<code>t_start_s</code> / <code>t_end_s</code> / 各通道值），文件更小，也便于给 AI 阅读。</li>
+<li><b>文件 → 导入 CSV</b>：按时间列重建时间轴并回放波形。</li>
+<li>导出期间冻结接收、导入期间丢弃串口帧，避免环形缓冲被覆盖或两份数据混在一起。</li>
+</ul>
+
+<h3>显示</h3>
+<ul>
+<li>菜单栏右上角按钮切换深色 / 浅色主题，选择会被记住。</li>
+<li>“显示缓冲(ms)”只改变可见时间窗口；底层环形缓冲固定 200000 点 / 通道。</li>
+</ul>
+</body></html>)");
+}
+
+// 导出文件的元数据头：CSV 用 # 注释行，Markdown 用标题 + 列表
+QString buildExportMeta(DataExporter::Format format, const QString &protocolName,
+                        double periodSeconds, int channelCount, qint64 rowCount)
+{
+    const QString created = QDateTime::currentDateTime().toString(Qt::ISODate);
+    const QString sampleRate =
+        periodSeconds > 0.0 ? QString::number(1.0 / periodSeconds, 'f', 3)
+                            : QStringLiteral("0");
+    const QString dt = periodSeconds > 0.0 ? QString::number(periodSeconds, 'f', 9)
+                                           : QStringLiteral("0");
+
+    if (format == DataExporter::Format::Csv) {
+        QStringList meta;
+        meta << QStringLiteral("# Baud Export v1");
+        meta << QStringLiteral("# created=%1").arg(created);
+        meta << QStringLiteral("# protocol=%1").arg(protocolName);
+        meta << QStringLiteral("# time_base=pc_arrival");
+        meta << QStringLiteral("# sample_rate=%1").arg(sampleRate);
+        meta << QStringLiteral("# dt_auto=%1").arg(dt);
+        meta << QStringLiteral("# channels=%1").arg(channelCount);
+        meta << QStringLiteral("# rows=%1").arg(rowCount);
+        return meta.join(QLatin1Char('\n')) + QLatin1Char('\n');
+    }
+
+    const bool compact = format == DataExporter::Format::CompactMarkdown;
+    QStringList meta;
+    meta << (compact ? QStringLiteral("# Baud 数据导出（精简）")
+                     : QStringLiteral("# Baud 数据导出"));
+    meta << QString();
+    meta << (compact
+                 ? QStringLiteral("> 每行是一个时间段：区间内所有通道的值保持不变；"
+                                  "`t_start_s` / `t_end_s` 是相对会话起点的时间（秒）。")
+                 : QStringLiteral("> 每行是一个采样点：`time_s` 是相对会话起点的时间（秒），"
+                                  "`ch0`… 为各通道数值。"));
+    meta << QString();
+    meta << QStringLiteral("- 创建时间：%1").arg(created);
+    meta << QStringLiteral("- 协议：%1").arg(protocolName);
+    meta << QStringLiteral("- 时间基准：pc_arrival（上位机接收时刻）");
+    meta << QStringLiteral("- 采样率：%1 Hz").arg(sampleRate);
+    meta << QStringLiteral("- 自动估计 Δt：%1 s").arg(dt);
+    meta << QStringLiteral("- 通道数：%1").arg(channelCount);
+    meta << (compact ? QStringLiteral("- 原始采样点数：%1").arg(rowCount)
+                     : QStringLiteral("- 采样行数：%1").arg(rowCount));
+    meta << QString();
+    return meta.join(QLatin1Char('\n')) + QLatin1Char('\n');
 }
 
 // 通道色块随主题变化，统一从这里生成，避免波形、通道表、测量面板各画一套
@@ -119,12 +222,28 @@ void Baud::buildUi()
     ui.mainToolBar->hide();
 
     QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("文件"));
-    QAction *exportAction = fileMenu->addAction(QStringLiteral("导出 CSV…"));
-    exportAction->setToolTip(QStringLiteral("把当前缓冲区的数据导出为 CSV 文件"));
-    connect(exportAction, &QAction::triggered, this, &Baud::onExportCsv);
-    QAction *importAction = fileMenu->addAction(QStringLiteral("导入 CSV…"));
-    importAction->setToolTip(QStringLiteral("读取 CSV 文件并按时间轴回放波形"));
-    connect(importAction, &QAction::triggered, this, &Baud::onImportCsv);
+    QMenu *exportMenu = fileMenu->addMenu(QStringLiteral("导出数据"));
+    m_exportCsvAction = exportMenu->addAction(QStringLiteral("CSV…"));
+    m_exportCsvAction->setToolTip(QStringLiteral(
+        "宽表 time_s,ch0,…，带 # 注释元数据，Excel / pandas 可直接打开"));
+    connect(m_exportCsvAction, &QAction::triggered, this, [this]() {
+        startExport(DataExporter::Format::Csv);
+    });
+    m_exportMarkdownAction = exportMenu->addAction(QStringLiteral("Markdown…"));
+    m_exportMarkdownAction->setToolTip(QStringLiteral(
+        "同样的逐点数据写成 Markdown 表格，便于粘贴到文档或对话里"));
+    connect(m_exportMarkdownAction, &QAction::triggered, this, [this]() {
+        startExport(DataExporter::Format::Markdown);
+    });
+    m_exportCompactAction = exportMenu->addAction(QStringLiteral("精简 Markdown…"));
+    m_exportCompactAction->setToolTip(QStringLiteral(
+        "连续不变的采样合并成时间段，文件更小，便于给 AI 阅读"));
+    connect(m_exportCompactAction, &QAction::triggered, this, [this]() {
+        startExport(DataExporter::Format::CompactMarkdown);
+    });
+    m_importAction = fileMenu->addAction(QStringLiteral("导入 CSV…"));
+    m_importAction->setToolTip(QStringLiteral("读取 CSV 文件并按时间轴回放波形"));
+    connect(m_importAction, &QAction::triggered, this, &Baud::onImportCsv);
     fileMenu->addSeparator();
     QAction *quitAction = fileMenu->addAction(QStringLiteral("退出"));
     connect(quitAction, &QAction::triggered, this, &QWidget::close);
@@ -141,6 +260,9 @@ void Baud::buildUi()
     connect(clearAction, &QAction::triggered, this, &Baud::onClearClicked);
 
     QMenu *helpMenu = menuBar()->addMenu(QStringLiteral("帮助"));
+    QAction *guideAction = helpMenu->addAction(QStringLiteral("操作指南"));
+    connect(guideAction, &QAction::triggered, this, &Baud::showUserGuide);
+    helpMenu->addSeparator();
     QAction *updateAction = helpMenu->addAction(QStringLiteral("检查更新"));
     connect(updateAction, &QAction::triggered, this, [this]() {
         checkForUpdates(false);
@@ -189,6 +311,9 @@ void Baud::buildUi()
     serialGrid->setContentsMargins(10, 14, 10, 10);
 
     m_portCombo = new QComboBox(serialGroup);
+    // 串口描述（"COM9 · USB-SERIAL CH340"）可能很长，sizeHint 不要跟着最长项变宽
+    m_portCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_portCombo->setMinimumContentsLength(12);
     m_refreshPortsButton = new QPushButton(serialGroup);
     m_refreshPortsButton->setFixedSize(28, 28);
     m_refreshPortsButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
@@ -242,10 +367,18 @@ void Baud::buildUi()
     m_connectButton->setObjectName(QStringLiteral("primaryButton"));
     m_connectButton->setMinimumHeight(32);
 
+    // 端口行：下拉框和刷新按钮放进同一个横向布局并整行铺满，
+    // 右边缘与下面的波特率等字段对齐（此前按钮单独占一列，端口框比下面窄一截）
+    QWidget *portRow = new QWidget(serialGroup);
+    QHBoxLayout *portRowLayout = new QHBoxLayout(portRow);
+    portRowLayout->setContentsMargins(0, 0, 0, 0);
+    portRowLayout->setSpacing(6);
+    portRowLayout->addWidget(m_portCombo, 1);
+    portRowLayout->addWidget(m_refreshPortsButton, 0);
+
     // 端口/波特率各占一行；数据位/停止位、校验/流控两两一行，少占纵向空间
     serialGrid->addWidget(new QLabel(QStringLiteral("端口"), serialGroup), 0, 0);
-    serialGrid->addWidget(m_portCombo, 0, 1, 1, 2);
-    serialGrid->addWidget(m_refreshPortsButton, 0, 3);
+    serialGrid->addWidget(portRow, 0, 1, 1, 3);
     serialGrid->addWidget(new QLabel(QStringLiteral("波特率"), serialGroup), 1, 0);
     serialGrid->addWidget(m_baudCombo, 1, 1, 1, 3);
     serialGrid->addWidget(new QLabel(QStringLiteral("数据位"), serialGroup), 2, 0);
@@ -402,8 +535,8 @@ void Baud::buildUi()
     scopeBarLayout->addWidget(m_followButton);
     m_clearMarkersButton = new QPushButton(QStringLiteral("清除游标"), scopeBar);
     scopeBarLayout->addWidget(m_clearMarkersButton);
-    // 交互说明全部放在波形控件的 tooltip 里；这里不再放长提示，
-    // 否则窄窗口下 QLabel 自动换行会把波形区顶下去一大截。
+    // 交互说明统一放在“帮助 → 操作指南”，工具栏不再挂长提示：
+    // 窄窗口下 QLabel 自动换行会把波形区顶下去一大截。
     scopeBarLayout->addStretch(1);
     scopeLayout->addWidget(scopeBar);
 
@@ -531,9 +664,8 @@ void Baud::buildUi()
                 }
 
                 const auto formatStat = [](bool hasData, double value) {
-                    return hasData && std::isfinite(value)
-                               ? QString::number(value, 'g', 6)
-                               : QStringLiteral("--");
+                    return hasData && std::isfinite(value) ? ValueFormat::format(value)
+                                                           : QStringLiteral("--");
                 };
 
                 m_measureTable->setRowCount(info.stats.size());
@@ -550,7 +682,7 @@ void Baud::buildUi()
                     };
 
                     QTableWidgetItem *nameItem = ensureItem(0);
-                    nameItem->setText(QStringLiteral("CH%1").arg(stat.channel + 1));
+                    nameItem->setText(QStringLiteral("CH%1").arg(stat.channel));
                     nameItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
                     nameItem->setForeground(Theme::channelColor(stat.channel));
                     // 行的顺序只包含可见通道，主题切换要按真实通道号重新取色
@@ -713,6 +845,14 @@ void Baud::updateConnectionUi()
     m_pauseButton->setEnabled(m_connected && !rawMode && !ioBusy);
     m_clearButton->setEnabled(!ioBusy);
 
+    // 导入/导出期间菜单项一并禁用：只靠 startExport/onImportCsv 里的判空兜底，
+    // 会把状态栏的“正在导出…”换成一条 3 秒后就消失的提示。
+    for (QAction *action : {m_exportCsvAction, m_exportMarkdownAction,
+                            m_exportCompactAction, m_importAction}) {
+        if (action)
+            action->setEnabled(!ioBusy);
+    }
+
     if (rawMode && m_pauseButton->isChecked()) {
         m_pauseButton->setChecked(false);
         m_paused = false;
@@ -802,7 +942,7 @@ void Baud::onPauseClicked()
 void Baud::onClearClicked()
 {
     if (m_exporting || m_importing) {
-        statusBar()->showMessage(QStringLiteral("正在导入/导出，请稍候…"), 3000);
+        statusBar()->showMessage(QStringLiteral("正在导入/导出，请稍候…"), 0);
         return;
     }
     resetSession();
@@ -1033,37 +1173,63 @@ void Baud::onSendModeChanged(int index)
         m_sendEdit->setPlaceholderText(QStringLiteral("输入要发送的 ASCII 文本"));
 }
 
-void Baud::onExportCsv()
+void Baud::startExport(DataExporter::Format format)
 {
     if (m_exportThread) {
-        statusBar()->showMessage(QStringLiteral("正在导出，请稍候…"), 3000);
+        // 用 0 超时：否则这条“请稍候”3 秒后过期，状态栏变空，反而看不出还在导出
+        statusBar()->showMessage(QStringLiteral("正在导出，请稍候…（导出期间暂停接收）"), 0);
         return;
     }
     if (m_importThread) {
-        statusBar()->showMessage(QStringLiteral("正在导入，请稍候…"), 3000);
+        statusBar()->showMessage(QStringLiteral("正在导入，请稍候…"), 0);
         return;
     }
     if (m_store.channelCount() <= 0 || m_store.sampleCount() <= 0) {
-        QMessageBox::information(this, QStringLiteral("导出 CSV"),
+        QMessageBox::information(this, QStringLiteral("导出数据"),
                                  QStringLiteral("当前没有可导出的数据。"));
         return;
     }
 
+    QString caption;
+    QString filter;
+    QString suffix;
+    QString busyText;
+    switch (format) {
+    case DataExporter::Format::Markdown:
+        caption = QStringLiteral("导出 Markdown");
+        filter = QStringLiteral("Markdown 文件 (*.md)");
+        suffix = QStringLiteral("md");
+        busyText = QStringLiteral("正在导出 Markdown（导出期间暂停接收）…");
+        break;
+    case DataExporter::Format::CompactMarkdown:
+        caption = QStringLiteral("导出精简 Markdown");
+        filter = QStringLiteral("Markdown 文件 (*.md)");
+        suffix = QStringLiteral("compact.md");
+        busyText = QStringLiteral("正在导出精简 Markdown（导出期间暂停接收）…");
+        break;
+    case DataExporter::Format::Csv:
+    default:
+        caption = QStringLiteral("导出 CSV");
+        filter = QStringLiteral("CSV 文件 (*.csv)");
+        suffix = QStringLiteral("csv");
+        busyText = QStringLiteral("正在导出 CSV（导出期间暂停接收）…");
+        break;
+    }
+
+    const QString stamp =
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
     const QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("导出 CSV"),
-        QStringLiteral("Baud_%1.csv")
-            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))),
-        QStringLiteral("CSV 文件 (*.csv)"));
+        this, caption, QStringLiteral("Baud_%1.%2").arg(stamp, suffix), filter);
     if (path.isEmpty())
         return;
 
     m_exportThread = new QThread(this);
-    m_exporter = new CsvExporter;
+    m_exporter = new DataExporter;
     m_exporter->moveToThread(m_exportThread);
     connect(m_exportThread, &QThread::finished, m_exporter, &QObject::deleteLater);
 
-    connect(m_exporter, &CsvExporter::needMore, this, &Baud::onExportNeedMore);
-    connect(m_exporter, &CsvExporter::finished, this, &Baud::onExportFinished);
+    connect(m_exporter, &DataExporter::needMore, this, &Baud::onExportNeedMore);
+    connect(m_exporter, &DataExporter::finished, this, &Baud::onExportFinished);
 
     // 导出区间在开始时就固定下来：导出期间冻结接收，
     // 否则环形缓冲回绕会把已导出的区间覆盖掉，导致时间列回退、行数对不上。
@@ -1071,37 +1237,35 @@ void Baud::onExportCsv()
     m_exportTo = m_store.sampleCount() - 1;
     m_exportCursor = m_exportFrom;
     m_exporting = true;
-    statusBar()->showMessage(QStringLiteral("正在导出 CSV（导出期间暂停接收）…"), 0);
+    statusBar()->showMessage(busyText, 0);
     updateConnectionUi();
 
-    // 元数据头：与导入端约定一致，便于回读时还原语义
-    QStringList meta;
-    meta << QStringLiteral("# Baud Export v1");
-    meta << QStringLiteral("# created=%1")
-                .arg(QDateTime::currentDateTime().toString(Qt::ISODate));
-    meta << QStringLiteral("# protocol=%1").arg(protocolDisplayName(currentProtocol()));
-    meta << QStringLiteral("# time_base=pc_arrival");
-    meta << QStringLiteral("# sample_rate=%1").arg(
-        m_store.estimatedPeriod() > 0.0 ? QString::number(1.0 / m_store.estimatedPeriod(), 'f', 3)
-                                         : QStringLiteral("0"));
-    meta << QStringLiteral("# dt_auto=%1").arg(
-        m_store.estimatedPeriod() > 0.0 ? QString::number(m_store.estimatedPeriod(), 'f', 9)
-                                         : QStringLiteral("0"));
-    meta << QStringLiteral("# channels=%1").arg(m_store.channelCount());
-    meta << QStringLiteral("# rows=%1").arg(m_exportTo - m_exportFrom + 1);
+    const QString meta = buildExportMeta(format, protocolDisplayName(currentProtocol()),
+                                         m_store.estimatedPeriod(), m_store.channelCount(),
+                                         m_exportTo - m_exportFrom + 1);
 
     m_exportThread->start();
-    QMetaObject::invokeMethod(m_exporter, "open", Qt::QueuedConnection,
-                              Q_ARG(QString, path),
-                              Q_ARG(QString, meta.join(QLatin1Char('\n')) + QLatin1Char('\n')),
-                              Q_ARG(int, m_store.channelCount()));
+    // invokeMethod 找不到槽或参数类型未注册时只返回 false（并往 stderr 打一行），
+    // 不处理的话 open 永不执行，needMore/finished 都不会来，m_exporting 永远为 true。
+    const bool invoked = QMetaObject::invokeMethod(
+        m_exporter, "open", Qt::QueuedConnection,
+        Q_ARG(QString, path),
+        Q_ARG(QString, meta),
+        Q_ARG(int, m_store.channelCount()),
+        Q_ARG(int, static_cast<int>(format)));
+    if (!invoked)
+        abortExport(QStringLiteral("无法启动导出任务（导出线程未接受请求）。"));
 }
 
 void Baud::onExportNeedMore()
 {
-    if (!m_exporter || m_exportCursor > m_exportTo) {
-        if (m_exporter)
-            QMetaObject::invokeMethod(m_exporter, "close", Qt::QueuedConnection);
+    if (!m_exporter)
+        return;
+
+    // 区间已取完（或缓冲被清空）：通知导出线程写完收尾内容并关闭文件
+    if (m_exportCursor > m_exportTo) {
+        if (!QMetaObject::invokeMethod(m_exporter, "close", Qt::QueuedConnection))
+            abortExport(QStringLiteral("导出收尾失败（导出线程未响应）。"));
         return;
     }
 
@@ -1116,13 +1280,32 @@ void Baud::onExportNeedMore()
 
     // 区间被清空/越界时立刻收尾，避免空块在两侧来回空转
     if (times.isEmpty()) {
-        QMetaObject::invokeMethod(m_exporter, "close", Qt::QueuedConnection);
+        if (!QMetaObject::invokeMethod(m_exporter, "close", Qt::QueuedConnection))
+            abortExport(QStringLiteral("导出收尾失败（导出线程未响应）。"));
         return;
     }
 
-    QMetaObject::invokeMethod(m_exporter, "appendChunk", Qt::QueuedConnection,
-                              Q_ARG(QVector<double>, times),
-                              Q_ARG(QVector<double>, values));
+    if (!QMetaObject::invokeMethod(m_exporter, "appendChunk", Qt::QueuedConnection,
+                                   Q_ARG(QVector<double>, times),
+                                   Q_ARG(QVector<double>, values))) {
+        abortExport(QStringLiteral("导出数据块失败（导出线程未响应）。"));
+    }
+}
+
+// 导出请求发不出去（槽签名/参数类型不匹配、线程已退出）时的兜底：
+// 不复位 m_exporting 的话 updateConnectionUi() 会把串口/协议/清空/发送永久禁用。
+void Baud::abortExport(const QString &message)
+{
+    m_exporting = false;
+    if (m_exportThread)
+        stopIoThread(m_exportThread);
+    m_exporter = nullptr;
+    m_exportCursor = 0;
+    m_exportFrom = 0;
+    m_exportTo = 0;
+    updateConnectionUi();
+    statusBar()->clearMessage();
+    QMessageBox::warning(this, QStringLiteral("导出数据"), message);
 }
 
 void Baud::onExportFinished(bool ok, const QString &message)
@@ -1133,15 +1316,10 @@ void Baud::onExportFinished(bool ok, const QString &message)
         statusBar()->showMessage(message, 5000);
     } else {
         statusBar()->clearMessage();
-        QMessageBox::warning(this, QStringLiteral("导出 CSV"), message);
+        QMessageBox::warning(this, QStringLiteral("导出数据"), message);
     }
 
-    if (m_exportThread) {
-        m_exportThread->quit();
-        m_exportThread->wait(3000);
-        m_exportThread->deleteLater();
-        m_exportThread = nullptr;
-    }
+    stopIoThread(m_exportThread);
     m_exporter = nullptr;
     m_exportCursor = 0;
     m_exportFrom = 0;
@@ -1152,11 +1330,11 @@ void Baud::onExportFinished(bool ok, const QString &message)
 void Baud::onImportCsv()
 {
     if (m_importThread) {
-        statusBar()->showMessage(QStringLiteral("正在导入，请稍候…"), 3000);
+        statusBar()->showMessage(QStringLiteral("正在导入，请稍候…"), 0);
         return;
     }
     if (m_exportThread) {
-        statusBar()->showMessage(QStringLiteral("正在导出，请稍候…"), 3000);
+        statusBar()->showMessage(QStringLiteral("正在导出，请稍候…（导出期间暂停接收）"), 0);
         return;
     }
 
@@ -1193,8 +1371,18 @@ void Baud::onImportCsv()
     });
 
     m_importThread->start();
-    QMetaObject::invokeMethod(m_importer, "importFile", Qt::QueuedConnection,
-                              Q_ARG(QString, path));
+    // 同导出：请求投递失败时 importFile 不会执行，m_importing 会永久卡住界面
+    if (!QMetaObject::invokeMethod(m_importer, "importFile", Qt::QueuedConnection,
+                                   Q_ARG(QString, path))) {
+        m_importing = false;
+        m_acceptData = true;
+        stopIoThread(m_importThread);
+        m_importer = nullptr;
+        updateConnectionUi();
+        statusBar()->clearMessage();
+        QMessageBox::warning(this, QStringLiteral("导入 CSV"),
+                             QStringLiteral("无法启动导入任务（导入线程未接受请求）。"));
+    }
 }
 
 void Baud::onImportFrames(const FrameBatch &frames)
@@ -1240,12 +1428,7 @@ void Baud::onImportFinished(bool ok, const QString &message, qint64 rowCount, in
         QMessageBox::warning(this, QStringLiteral("导入 CSV"), message);
     }
 
-    if (m_importThread) {
-        m_importThread->quit();
-        m_importThread->wait(3000);
-        m_importThread->deleteLater();
-        m_importThread = nullptr;
-    }
+    stopIoThread(m_importThread);
     m_importer = nullptr;
     updateConnectionUi();
 }
@@ -1285,7 +1468,7 @@ void Baud::rebuildChannelTable(int channelCount)
         m_channelTable->setItem(channel, 0, checkItem);
 
         QTableWidgetItem *nameItem =
-            new QTableWidgetItem(channelSwatch(channel), QStringLiteral("CH%1").arg(channel + 1));
+            new QTableWidgetItem(channelSwatch(channel), QStringLiteral("CH%1").arg(channel));
         nameItem->setFlags(Qt::ItemIsEnabled);
         m_channelTable->setItem(channel, 1, nameItem);
 
@@ -1311,17 +1494,26 @@ void Baud::updateChannelTable()
     const qint64 to = m_store.sampleCount() - 1;
     const qint64 from = std::max(m_store.firstStoredIndex(), to - 999);
 
+    // 单元格窄，定点显示可能被裁：悬停时给出完整精度
+    const auto setValueCell = [this](int row, int column, bool hasValue, double value) {
+        QTableWidgetItem *item = m_channelTable->item(row, column);
+        const QString text = hasValue ? ValueFormat::format(value) : QStringLiteral("--");
+        const QString tip = hasValue ? ValueFormat::formatExact(value) : QString();
+        if (item->text() != text)
+            item->setText(text);
+        if (item->toolTip() != tip)
+            item->setToolTip(tip);
+    };
+
     QSignalBlocker blocker(m_channelTable);
     for (int channel = 0; channel < channelCount; ++channel) {
-        m_channelTable->item(channel, 2)->setText(formatValue(latest.at(channel)));
+        setValueCell(channel, 2, true, latest.at(channel));
 
         double minValue = 0.0;
         double maxValue = 0.0;
         const bool hasRange = m_store.rangeMinMax(channel, from, to, minValue, maxValue);
-        m_channelTable->item(channel, 3)->setText(hasRange ? formatValue(minValue)
-                                                           : QStringLiteral("--"));
-        m_channelTable->item(channel, 4)->setText(hasRange ? formatValue(maxValue)
-                                                           : QStringLiteral("--"));
+        setValueCell(channel, 3, hasRange, minValue);
+        setValueCell(channel, 4, hasRange, maxValue);
     }
 }
 
@@ -1349,6 +1541,30 @@ void Baud::updateThemeButton()
     m_themeButton->setToolTip(dark
                                   ? QStringLiteral("当前：深色主题，点击切换到浅色")
                                   : QStringLiteral("当前：浅色主题，点击切换到深色"));
+}
+
+// 操作指南：波形区的交互说明原先挂在控件 tooltip 上，鼠标一进绘图区就弹一大段
+// 文字，干扰读数；现在改成按需打开的对话框。
+void Baud::showUserGuide()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("操作指南"));
+    dialog.resize(640, 620);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    QTextBrowser *browser = new QTextBrowser(&dialog);
+    browser->setOpenExternalLinks(false);
+    browser->setHtml(userGuideHtml());
+    layout->addWidget(browser, 1);
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    // 应用没有加载 Qt 翻译文件，标准按钮默认是英文 "Close"，这里改成中文
+    buttons->button(QDialogButtonBox::Close)->setText(QStringLiteral("关闭"));
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    layout->addWidget(buttons);
+
+    dialog.exec();
 }
 
 void Baud::onThemeToggled()
@@ -1471,27 +1687,30 @@ void Baud::stopSerialThread()
     m_worker = nullptr;
 }
 
-// 退出前停掉 CSV 导入/导出线程。
-// QThread 在仍运行时被析构会触发 qFatal（"QThread: Destroyed while thread is still running"），
-// 因此必须先 quit + wait；等待超时就放弃 deleteLater，宁可泄漏一个 QThread 对象也不能让程序崩掉。
+// 导入/导出线程的收尾：quit + wait；等待超时说明线程仍卡在写盘/解析里，
+// 此时绝不能让它随父对象析构（QThread 运行中被销毁会 qFatal），
+// 脱离父子关系，宁可泄漏一个 QThread 对象也不能让程序崩掉。
+bool Baud::stopIoThread(QThread *&thread)
+{
+    if (!thread)
+        return true;
+
+    thread->quit();
+    const bool stopped = thread->wait(3000);
+    if (stopped)
+        thread->deleteLater();
+    else
+        thread->setParent(nullptr);
+    thread = nullptr;
+    return stopped;
+}
+
+// 退出前停掉 CSV 导入/导出线程（原因见 stopIoThread）
 void Baud::stopIoThreads()
 {
-    const auto stopThread = [](QThread *&thread) {
-        if (!thread)
-            return;
-        thread->quit();
-        if (thread->wait(3000)) {
-            thread->deleteLater();
-        } else {
-            // 同上：运行中的 QThread 不能随父对象析构，脱离父子关系避免 qFatal
-            thread->setParent(nullptr);
-        }
-        thread = nullptr;
-    };
-
-    stopThread(m_exportThread);
+    stopIoThread(m_exportThread);
     m_exporter = nullptr;
-    stopThread(m_importThread);
+    stopIoThread(m_importThread);
     m_importer = nullptr;
 }
 

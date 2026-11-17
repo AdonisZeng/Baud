@@ -5,6 +5,7 @@
 
 #include "ui/Theme.h"
 #include "ui/TimeFormat.h"
+#include "ui/ValueFormat.h"
 
 #include <QContextMenuEvent>
 #include <QFont>
@@ -44,8 +45,7 @@ private:
 
 QString formatValueText(double value)
 {
-    return std::isfinite(value) ? QString::number(value, 'g', 6)
-                                : QStringLiteral("--");
+    return ValueFormat::format(value);
 }
 
 // 时间轴刻度：按当前跨度自动选择 ms / s / min 单位，
@@ -144,11 +144,8 @@ void ScopePlot::setupStyle()
     axisRect()->setRangeZoomFactor(0.85);
     setNoAntialiasingOnDrag(true);
     setMouseTracking(true);
-    setToolTip(QStringLiteral(
-        "左右两条竖线是显示缓冲边界：跟随最新时，两边界间距 = 设置的缓冲长度；波形从右边界进入、到左边界移出\n"
-        "绘图区滚轮：同时缩放 X/Y；X 轴带滚轮：只缩放 X；Y 轴带滚轮：只缩放 Y\n"
-        "X 轴带 / 绘图区双击：固定竖线；双击已有竖线：移除；Y 轴带双击：复位视图\n"
-        "左键点竖线设为 A，Shift+左键设为 B；A/B 是测量游标，显示真实时间差，不裁剪波形；右键菜单更多"));
+    // 交互说明不放在控件 tooltip 里（悬停即弹一大段文字太吵），
+    // 统一收到“帮助 → 操作指南”。
 
     xAxis->setLabel(QStringLiteral("时间"));
     yAxis->setLabel(QStringLiteral("数值"));
@@ -254,7 +251,7 @@ void ScopePlot::setChannelCount(int count)
 
     for (int channel = 0; channel < count; ++channel) {
         QCPGraph *graph = addGraph();
-        graph->setName(QStringLiteral("CH%1").arg(channel + 1));
+        graph->setName(QStringLiteral("CH%1").arg(channel));
         graph->setPen(QPen(Theme::channelColor(channel), 1.0));
         graph->setLineStyle(QCPGraph::lsLine);
         graph->setAntialiased(false);
@@ -944,7 +941,7 @@ void ScopePlot::syncHover(const QPoint &pos)
                 continue;
             }
             label->setText(QStringLiteral("CH%1: %2")
-                               .arg(channel + 1)
+                               .arg(channel)
                                .arg(formatValueText(value)));
             label->position->setCoords(time, value);
             label->setVisible(true);

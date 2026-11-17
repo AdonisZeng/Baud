@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "io/DataExporter.h"
 #include "model/ChannelStore.h"
 #include "protocol/ProtocolTypes.h"
 #include "serial/SerialSettings.h"
@@ -10,6 +11,7 @@
 
 #include <QMainWindow>
 
+class QAction;
 class QCloseEvent;
 class QComboBox;
 class QLabel;
@@ -21,7 +23,6 @@ class QStackedWidget;
 class QTableWidget;
 class QThread;
 class QTimer;
-class CsvExporter;
 class CsvImporter;
 class ScopePlot;
 class SerialWorker;
@@ -63,7 +64,6 @@ private slots:
     void onSendClicked();
     void onRawModeChanged(int index);
     void onSendModeChanged(int index);
-    void onExportCsv();
     void onImportCsv();
     void onExportNeedMore();
     void onExportFinished(bool ok, const QString &message);
@@ -83,6 +83,11 @@ private:
     void updateChannelTable();
     void refreshChannelSwatches();
     void updateThemeButton();
+    void showUserGuide();
+    void startExport(DataExporter::Format format);
+    // 导出/导入线程的收尾：超时则脱离父子关系（运行中的 QThread 不能析构）
+    bool stopIoThread(QThread *&thread);
+    void abortExport(const QString &message);
     void appendRawData(const QByteArray &bytes);
     void resetSession();
     void stopSerialThread();
@@ -120,6 +125,12 @@ private:
     QPushButton *m_pauseButton = nullptr;
     QPushButton *m_clearButton = nullptr;
 
+    // 导入/导出期间要禁用的菜单项
+    QAction *m_exportCsvAction = nullptr;
+    QAction *m_exportMarkdownAction = nullptr;
+    QAction *m_exportCompactAction = nullptr;
+    QAction *m_importAction = nullptr;
+
     QTableWidget *m_channelTable = nullptr;
     QPlainTextEdit *m_rawMonitor = nullptr;
     QComboBox *m_rawModeCombo = nullptr;
@@ -144,9 +155,9 @@ private:
     UpdateChecker *m_updateChecker = nullptr;
     UpdateDialog *m_updateDialog = nullptr;
 
-    // CSV 导入导出
+    // 数据导出（CSV / Markdown）与 CSV 导入
     QThread *m_exportThread = nullptr;
-    CsvExporter *m_exporter = nullptr;
+    DataExporter *m_exporter = nullptr;
     QThread *m_importThread = nullptr;
     CsvImporter *m_importer = nullptr;
     qint64 m_exportFrom = 0;

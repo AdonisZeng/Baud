@@ -118,7 +118,7 @@ if exist "$(ProjectDir)LICENSES\LGPL-3.0.txt" copy /Y "$(ProjectDir)LICENSES\LGP
     <ResourceCompile Include="Baud.rc"/>
     <QtMoc Include="Baud.h"/>
     <QtMoc Include="qcustomplot\qcustomplot.h"/>
-    <QtMoc Include="src\io\CsvExporter.h"/>
+    <QtMoc Include="src\io\DataExporter.h"/>
     <QtMoc Include="src\io\CsvImporter.h"/>
     <QtMoc Include="src\serial\SerialWorker.h"/>
     <QtMoc Include="src\ui\ScopePlot.h"/>
@@ -127,7 +127,7 @@ if exist "$(ProjectDir)LICENSES\LGPL-3.0.txt" copy /Y "$(ProjectDir)LICENSES\LGP
     <ClCompile Include="Baud.cpp"/>
     <ClCompile Include="main.cpp"/>
     <ClCompile Include="qcustomplot\qcustomplot.cpp"/>
-    <ClCompile Include="src\io\CsvExporter.cpp"/>
+    <ClCompile Include="src\io\DataExporter.cpp"/>
     <ClCompile Include="src\io\CsvImporter.cpp"/>
     <ClCompile Include="src\protocol\JustFloatParser.cpp"/>
     <ClCompile Include="src\protocol\FireWaterParser.cpp"/>
@@ -142,6 +142,7 @@ if exist "$(ProjectDir)LICENSES\LGPL-3.0.txt" copy /Y "$(ProjectDir)LICENSES\LGP
     <ClInclude Include="src\Version.h"/>
     <ClInclude Include="src\serial\FrameTimestamper.h"/>
     <ClInclude Include="src\ui\TimeFormat.h"/>
+    <ClInclude Include="src\ui\ValueFormat.h"/>
 
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

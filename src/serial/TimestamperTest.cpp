@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 AdonisZeng
 //
-// 帧时间戳与周期估计的独立自测（不依赖串口硬件）。
+// 帧时间戳、周期估计与数据导出/导入的独立自测（不依赖串口硬件）。
 // 用法：scripts\run-selftest.ps1
 
 #include "serial/FrameTimestamper.h"
 #include "model/ChannelStore.h"
-#include "io/CsvExporter.h"
+#include "io/DataExporter.h"
 #include "io/CsvImporter.h"
+#include "ui/ValueFormat.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 
 #include <cmath>
+#include <limits>
 
 static int g_failures = 0;
 static QFile g_log;
@@ -70,6 +72,27 @@ int main(int argc, char **argv)
               "纳秒换算：16e6 ns == 16 ms");
         check(std::fabs(FrameTimestamper::secondsFromNanoseconds(1'000'000) - 0.001) < 1e-12,
               "纳秒换算：1e6 ns == 1 ms");
+    }
+
+    // ---- 0b. 数值显示：定点区间内不要过早切科学计数 ----
+    {
+        check(ValueFormat::format(1234.5) == QStringLiteral("1234.5"),
+              QStringLiteral("数值显示：1234.5 不丢有效位（%1）")
+                  .arg(ValueFormat::format(1234.5)));
+        check(ValueFormat::format(12345.0) == QStringLiteral("12345"),
+              QStringLiteral("数值显示：12345 仍是定点（%1）")
+                  .arg(ValueFormat::format(12345.0)));
+        check(ValueFormat::format(9999999.0) == QStringLiteral("9999999"),
+              QStringLiteral("数值显示：1e7 以下保持定点（%1）")
+                  .arg(ValueFormat::format(9999999.0)));
+        check(ValueFormat::format(0.000123456) == QStringLiteral("0.000123456"),
+              QStringLiteral("数值显示：小数值保留有效位（%1）")
+                  .arg(ValueFormat::format(0.000123456)));
+        check(ValueFormat::format(1.5e8).contains(QStringLiteral("e+")),
+              QStringLiteral("数值显示：超大值才用科学计数（%1）")
+                  .arg(ValueFormat::format(1.5e8)));
+        check(ValueFormat::format(std::nan("")) == QStringLiteral("--"),
+              "数值显示：NaN 显示为 --");
     }
 
     // ---- 1. 稳态 1 kHz，批大小固定 ----
@@ -209,9 +232,9 @@ int main(int argc, char **argv)
                 values.append(row * 10.0 + channel);
         }
 
-        CsvExporter exporter;
+        DataExporter exporter;
         bool exportOk = false;
-        QObject::connect(&exporter, &CsvExporter::finished,
+        QObject::connect(&exporter, &DataExporter::finished,
                          [&exportOk](bool ok, const QString &) { exportOk = ok; });
         exporter.open(path, QStringLiteral("# Baud Export v1\n"), channelCount);
         exporter.appendChunk(times, values);
@@ -288,18 +311,18 @@ int main(int argc, char **argv)
                 values.append(row * 10.0 + channel);
         }
 
-        CsvExporter exporter;
+        DataExporter exporter;
         bool exportOk = false;
         bool chunkSent = false;
         int needMoreCount = 0;
-        QObject::connect(&exporter, &CsvExporter::needMore, [&]() {
+        QObject::connect(&exporter, &DataExporter::needMore, [&]() {
             ++needMoreCount;
             if (!chunkSent) {
                 chunkSent = true;
                 exporter.appendChunk(times, values);
             }
         });
-        QObject::connect(&exporter, &CsvExporter::finished,
+        QObject::connect(&exporter, &DataExporter::finished,
                          [&exportOk](bool ok, const QString &) { exportOk = ok; });
 
         check(exporter.open(path, QStringLiteral("# Baud Export v1\n"), channelCount),
@@ -358,6 +381,149 @@ int main(int argc, char **argv)
         check(importedChannels == 2, "带 BOM 的 CSV 通道数正确");
         check(imported.size() == 1 && std::fabs(imported.first().values.at(0) - 1.5) < 1e-9,
               "带 BOM 的 CSV 数据解析正确");
+
+        QFile::remove(path);
+    }
+
+    // ---- 9. Markdown 导出：逐点表格 + ch0 起始列名 ----
+    {
+        const QString path = QDir::tempPath() + "/baud_export.md";
+        QFile::remove(path);
+
+        const int channelCount = 2;
+        const int rowCount = 3;
+        QVector<double> times;
+        QVector<double> values;
+        for (int row = 0; row < rowCount; ++row) {
+            times.append(0.001 * (row + 1));
+            for (int channel = 0; channel < channelCount; ++channel)
+                values.append(row + channel * 0.5);
+        }
+
+        DataExporter exporter;
+        bool exportOk = false;
+        QObject::connect(&exporter, &DataExporter::finished,
+                         [&exportOk](bool ok, const QString &) { exportOk = ok; });
+        check(exporter.open(path, QStringLiteral("# Baud 数据导出\n\n"), channelCount,
+                            static_cast<int>(DataExporter::Format::Markdown)),
+              "Markdown 导出：open 成功");
+        exporter.appendChunk(times, values);
+        exporter.close();
+        check(exportOk, "Markdown 导出成功");
+
+        QString text;
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            text = QString::fromUtf8(file.readAll());
+            file.close();
+        }
+        text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        const QStringList lines = text.split(QLatin1Char('\n'));
+
+        int dataRows = 0;
+        bool hasHeader = false;
+        bool hasSeparator = false;
+        for (const QString &line : lines) {
+            if (line.startsWith(QStringLiteral("| 0.")))
+                ++dataRows;
+            if (line == QStringLiteral("| time_s | ch0 | ch1 |"))
+                hasHeader = true;
+            if (line.startsWith(QStringLiteral("| ---:")))
+                hasSeparator = true;
+        }
+        check(dataRows == rowCount,
+              QStringLiteral("Markdown 数据行数正确（%1）").arg(dataRows));
+        check(hasHeader, "Markdown 表头列名从 ch0 开始");
+        check(hasSeparator, "Markdown 表头带对齐分隔行");
+
+        QFile::remove(path);
+    }
+
+    // ---- 10. 精简 Markdown：连续相同值合并成时间段（跨块也要合并）----
+    {
+        const QString path = QDir::tempPath() + "/baud_export_compact.md";
+        QFile::remove(path);
+
+        const int channelCount = 2;
+        // 三组区间：0.001~0.002 → (1,2)；0.003~0.004 → (1,3)；0.005 → (2,3)
+        QVector<double> times = {0.001, 0.002, 0.003, 0.004, 0.005};
+        QVector<double> values = {1, 2, 1, 2, 1, 3, 1, 3, 2, 3};
+
+        DataExporter exporter;
+        bool exportOk = false;
+        QString message;
+        QObject::connect(&exporter, &DataExporter::finished,
+                         [&](bool ok, const QString &text) { exportOk = ok; message = text; });
+        check(exporter.open(path, QStringLiteral("# Baud 数据导出（精简）\n\n"), channelCount,
+                            static_cast<int>(DataExporter::Format::CompactMarkdown)),
+              "精简 Markdown：open 成功");
+
+        // 故意按两块推送：第 2、3 行跨块且取值相同，必须合并成同一段
+        exporter.appendChunk(times.mid(0, 2), values.mid(0, 4));
+        exporter.appendChunk(times.mid(2, 3), values.mid(4, 6));
+        exporter.close();
+
+        check(exportOk, "精简 Markdown 导出成功");
+        check(message.contains(QStringLiteral("3 段")),
+              QStringLiteral("精简 Markdown 段数正确（%1）").arg(message));
+
+        QString text;
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            text = QString::fromUtf8(file.readAll());
+            file.close();
+        }
+        text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        const QStringList lines = text.split(QLatin1Char('\n'));
+
+        check(lines.contains(QStringLiteral("| t_start_s | t_end_s | ch0 | ch1 |")),
+              "精简 Markdown 表头包含起止时间列");
+        check(lines.contains(QStringLiteral("| 0.001000 | 0.002000 | 1 | 2 |")),
+              "精简 Markdown：首段区间合并正确");
+        check(lines.contains(QStringLiteral("| 0.003000 | 0.004000 | 1 | 3 |")),
+              "精简 Markdown：跨块相同值合并正确");
+        check(lines.contains(QStringLiteral("| 0.005000 | 0.005000 | 2 | 3 |")),
+              "精简 Markdown：单点区间的起止时间相同");
+
+        int dataRows = 0;
+        for (const QString &line : lines) {
+            if (line.startsWith(QStringLiteral("| 0.")))
+                ++dataRows;
+        }
+        check(dataRows == 3, QStringLiteral("精简 Markdown 数据行数正确（%1）").arg(dataRows));
+
+        QFile::remove(path);
+    }
+
+    // ---- 11. 非有限值导出：nan / inf / -inf 必须能区分 ----
+    {
+        const QString path = QDir::tempPath() + "/baud_export_nonfinite.csv";
+        QFile::remove(path);
+
+        QVector<double> times = {0.001, 0.002, 0.003};
+        QVector<double> values = {std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::infinity(),
+                                  -std::numeric_limits<double>::infinity()};
+
+        DataExporter exporter;
+        check(exporter.open(path, QString(), 1,
+                            static_cast<int>(DataExporter::Format::Csv)),
+              "非有限值：open 成功");
+        exporter.appendChunk(times, values);
+        exporter.close();
+
+        QString text;
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            text = QString::fromUtf8(file.readAll());
+            file.close();
+        }
+        text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        const QStringList lines = text.split(QLatin1Char('\n'));
+
+        check(lines.contains(QStringLiteral("0.001000,nan")), "CSV 导出：NaN 保持为 nan");
+        check(lines.contains(QStringLiteral("0.002000,inf")), "CSV 导出：+Inf 写成 inf");
+        check(lines.contains(QStringLiteral("0.003000,-inf")), "CSV 导出：-Inf 写成 -inf");
 
         QFile::remove(path);
     }

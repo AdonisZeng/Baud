@@ -13,7 +13,7 @@ Baud is a Windows serial-port host application for devices that send data with t
   - **FireWater** — comma-separated text lines.
   - **RawData** — raw byte stream, displayed as ASCII or HEX.
 - Real-time plot: dark and light themes (toggle at the top-right of the menu bar), real-time X axis (automatic Δt estimation) with always-visible buffer boundaries, legend, automatic Y range (until zoomed manually), wheel zoom on both axes, drag to pan, double-click to reset, pause and resume.
-- CSV import/export: **文件 → 导出 CSV…** writes the session as a wide `time_s,ch0,…` table with metadata headers; **文件 → 导入 CSV…** rebuilds the timeline and replays the waveform.
+- Export/import: **文件 → 导出数据** writes the session as CSV (`time_s,ch0,…` with `#` metadata), a Markdown table, or a compact Markdown table where runs of identical channel values collapse into `t_start_s`/`t_end_s` intervals; **文件 → 导入 CSV…** rebuilds the timeline and replays the waveform. Plot interaction help lives in **帮助 → 操作指南**.
 - Channel table: visibility, color, current value and min/max of recent samples.
 - Measurement panel (left column, below the channel table): Δt between the A/B cursors plus per-channel min/max inside that interval.
 - Send panel: ASCII or HEX input with CR/LF/CRLF line endings.
@@ -123,7 +123,7 @@ Baud 是一款 Windows 串口上位机，用于接收、解析并实时绘制采
 - 发送栏：ASCII / HEX 输入，支持 CR、LF、CRLF 行尾。
 - 串口收发与解析在独立线程中运行，界面按批次刷新。
 - 每通道环形缓冲最多保留 200,000 个样本。
-- CSV 导入导出：**文件 → 导出 CSV…** 把当前会话导出为带元数据注释头的 `time_s,ch0,…` 宽表；**文件 → 导入 CSV…** 按时间列重建时间轴并回放波形。
+- 数据导出 / 导入：**文件 → 导出数据** 支持 CSV（带 `#` 元数据注释的 `time_s,ch0,…` 宽表）、Markdown（逐点表格）与精简 Markdown（连续相同值合并成时间段，便于给 AI 阅读）；**文件 → 导入 CSV…** 按时间列重建时间轴并回放波形。波形区交互说明见 **帮助 → 操作指南**。
 - 检查更新：**帮助 → 检查更新** 查询 GitHub Releases（启动后每日也会自动检查一次）。安装版下载安装包、校验 SHA256 后静默启动安装程序；便携版打开发布页面。
 
 ## 协议说明
