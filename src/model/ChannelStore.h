@@ -20,6 +20,11 @@ public:
     FrameBatch appendFrames(const FrameBatch &frames);
     void clear();
 
+    // 数据保留时长（秒）：只保留最近 N 秒的样本，0 表示不按时间裁剪。
+    // 与 kCapacity 的点数上限同时生效，先到者为准。
+    void setRetentionSeconds(double seconds);
+    double retentionSeconds() const;
+
     int channelCount() const;
     qint64 sampleCount() const;
     qint64 firstStoredIndex() const;
@@ -48,10 +53,16 @@ public:
 private:
     void ensureBuffers();
     void resetTimeline();
+    void trimByRetention();
+    // 绕过 firstStoredIndex() 的槽位访问，供裁剪时统计使用
+    double rawTime(qint64 index) const;
 
     int m_channelCount = 0;
     int m_matchingChannelFrames = 0;
     qint64 m_sampleCount = 0;
+    // 环形缓冲中最早有效样本的绝对序号（按时间裁剪时前移）
+    qint64 m_firstIndex = 0;
+    double m_retentionSeconds = 0.0;
     QVector<QVector<double>> m_data;
     // 与 m_data 同槽位的时间轴（秒，SerialWorker 侧以连接时刻为零点）
     QVector<double> m_times;

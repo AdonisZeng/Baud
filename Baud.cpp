@@ -93,12 +93,13 @@ QString userGuideHtml()
 
 <h3>波形区交互</h3>
 <ul>
-<li>滚轮：绘图区内同时缩放 X/Y；在 X 轴刻度带只缩放 X；在 Y 轴刻度带只缩放 Y。</li>
-<li>左键拖动：平移视图（会关闭“跟随最新”和自动 Y 缩放）。</li>
+<li>滚轮：绘图区内同时缩放 X/Y；在 X 轴刻度带只缩放 X；在右侧 Y 轴刻度带只缩放 Y。</li>
+<li>左键拖动：平移视图（会关闭“跟随最新”和自动 Y 缩放），平移不会越过缓冲区两端。</li>
 <li>双击：绘图区或 X 轴带固定一根竖线；双击已有竖线将其移除；Y 轴带双击复位视图。</li>
 <li>单击竖线设为测量起点 A，Shift+单击设为终点 B；A/B 只用于测量，不裁剪波形。</li>
 <li>右键菜单：固定 / 移除竖线、设为 A / B、清除手动游标、复位视图。</li>
-<li>左右两条彩色竖线是显示缓冲边界：跟随最新时，两边界间距等于“显示缓冲(ms)”；波形从右边界进入、到左边界移出。</li>
+<li>“缓冲窗口(ms)”是数据保留时长：内存只保留最近这么多毫秒的数据，超出部分直接丢弃，导出、测量与回看同样只针对这一段。</li>
+<li>左右两条彩色竖线就是缓冲区两端（间距恒等于缓冲时长）：缩放到最宽时正好贴住绘图区左右边缘；放大 X 后它们会移出画面。</li>
 <li>“跟随最新”恢复自动跟随与自动 Y；暂停时波形停止刷新，继续后自动补齐。</li>
 </ul>
 
@@ -128,14 +129,14 @@ QString userGuideHtml()
 <li><b>文件 → 导出数据 → CSV</b>：宽表 <code>time_s,ch0,…</code>，带 # 注释元数据，Excel / pandas 可直接打开。</li>
 <li><b>Markdown</b>：同样的逐点数据写成 Markdown 表格，便于粘贴到文档或对话里。</li>
 <li><b>精简 Markdown</b>：连续不变的采样合并成时间段（<code>t_start_s</code> / <code>t_end_s</code> / 各通道值），文件更小，也便于给 AI 阅读。</li>
-<li><b>文件 → 导入 CSV</b>：按时间列重建时间轴并回放波形。</li>
+<li><b>文件 → 导入 CSV</b>：按时间列重建时间轴并回放波形。导入不受“缓冲窗口(ms)”限制，但每个通道最多保留 200000 个采样点，超出部分会被覆盖。</li>
 <li>导出期间冻结接收、导入期间丢弃串口帧，避免环形缓冲被覆盖或两份数据混在一起。</li>
 </ul>
 
 <h3>显示</h3>
 <ul>
 <li>菜单栏右上角按钮切换深色 / 浅色主题，选择会被记住。</li>
-<li>“显示缓冲(ms)”只改变可见时间窗口；底层环形缓冲固定 200000 点 / 通道。</li>
+<li>“缓冲窗口(ms)”同时决定可回看的数据长度；200000 点 / 通道是极端采样率下的绝对上限。</li>
 </ul>
 </body></html>)");
 }
@@ -549,16 +550,16 @@ void Baud::buildUi()
     QHBoxLayout *scopeBarLayout = new QHBoxLayout(scopeBar);
     scopeBarLayout->setContentsMargins(2, 0, 2, 0);
     scopeBarLayout->setSpacing(8);
-    scopeBarLayout->addWidget(new QLabel(QStringLiteral("显示缓冲(ms)"), scopeBar));
+    scopeBarLayout->addWidget(new QLabel(QStringLiteral("缓冲窗口(ms)"), scopeBar));
     m_viewSpanSpin = new QSpinBox(scopeBar);
     m_viewSpanSpin->setRange(static_cast<int>(ScopePlot::kMinViewSpanMs),
                              static_cast<int>(ScopePlot::kMaxViewSpanMs));
     m_viewSpanSpin->setSingleStep(100);
     m_viewSpanSpin->setValue(static_cast<int>(ScopePlot::kDefaultViewSpanMs));
     m_viewSpanSpin->setToolTip(QStringLiteral(
-        "左右两条边界之间的 X 轴长度。跟随最新时，波形从右边界进入、"
-        "到左边界移出；滚轮/拖动缩放后可点“跟随最新”恢复。"
-        "底层环形缓冲固定为 200000 点/通道"));
+        "数据保留时长：只保留最近这么多毫秒的数据，超出部分直接丢弃，"
+        "导出、测量与回看同样只针对这一段。左右两条边界线的间距就是该值，"
+        "缩放到最宽时正好贴住绘图区左右边缘。点数上限 200000 点/通道仍然兜底"));
     scopeBarLayout->addWidget(m_viewSpanSpin);
     m_followButton = new QPushButton(QStringLiteral("跟随最新"), scopeBar);
     m_followButton->setCheckable(true);
@@ -575,6 +576,8 @@ void Baud::buildUi()
     m_scope = new ScopePlot(scopePage);
     m_scope->setStore(&m_store);
     m_scope->setChannelConfig(&m_channelConfig);
+    // 缓冲窗口同时是数据保留上限：串口数据只保留最近 N ms
+    m_store.setRetentionSeconds(static_cast<double>(m_viewSpanSpin->value()) / 1000.0);
     scopeLayout->addWidget(m_scope, 1);
     m_stack->addWidget(scopePage);
 
@@ -657,6 +660,8 @@ void Baud::buildUi()
     connect(m_pauseButton, &QPushButton::clicked, this, &Baud::onPauseClicked);
     connect(m_clearButton, &QPushButton::clicked, this, &Baud::onClearClicked);
     connect(m_viewSpanSpin, &QSpinBox::valueChanged, this, [this](int value) {
+        // 先裁剪 ChannelStore（硬上限），再让波形控件同步窗口与游标
+        m_store.setRetentionSeconds(static_cast<double>(value) / 1000.0);
         if (m_scope)
             m_scope->setViewSpan(value);
     });
@@ -898,6 +903,10 @@ void Baud::updateConnectionUi()
 
     m_pauseButton->setEnabled(m_connected && !rawMode && !ioBusy);
     m_clearButton->setEnabled(!ioBusy);
+    // 缓冲窗口会直接裁剪 ChannelStore：导出区间在开始时已固定，
+    // 导出途中改缓冲会把正在导出的数据裁掉（行数与 # rows= 对不上）；
+    // 导入途中改则会把已导入的前半段清掉。
+    m_viewSpanSpin->setEnabled(!ioBusy);
 
     // 导入/导出期间菜单项一并禁用：只靠 startExport/onImportCsv 里的判空兜底，
     // 会把状态栏的“正在导出…”换成一条 3 秒后就消失的提示。
@@ -1412,6 +1421,11 @@ void Baud::onImportCsv()
         emit closePortRequested();
     }
     resetSession();
+    // 导入的是离线文件，不受实时缓冲窗口限制：允许整份文件加载与整体回看
+    // （连接/清空/改一次缓冲参数后恢复实时裁剪）
+    m_store.setRetentionSeconds(0.0);
+    if (m_scope)
+        m_scope->setBufferUnlimited(true);
     updateConnectionUi();
     statusBar()->showMessage(QStringLiteral("正在导入 CSV…"), 0);
 
@@ -1480,9 +1494,22 @@ void Baud::onImportFinished(bool ok, const QString &message, qint64 rowCount, in
         m_measuredJitter = m_store.periodJitter();
         if (m_scope)
             m_scope->setSamplePeriod(m_measuredPeriod);
-        statusBar()->showMessage(QStringLiteral("%1，%2 个通道").arg(message).arg(channelCount), 5000);
+        // 导入不受“缓冲窗口(ms)”限制，但仍受 200000 点/通道上限：
+        // 超长文件后半段会覆盖前半段，提示里给出实际保留行数，避免误解。
+        const qint64 retained = m_store.sampleCount() - m_store.firstStoredIndex();
+        QString summary = QStringLiteral("%1，%2 个通道").arg(message).arg(channelCount);
+        if (retained < rowCount) {
+            summary += QStringLiteral("（受 %1 点/通道上限限制，实际保留 %2 行）")
+                           .arg(ChannelStore::kCapacity)
+                           .arg(retained);
+        }
+        statusBar()->showMessage(summary, 5000);
         m_scope->resetView();
     } else {
+        // 导入失败：恢复到实时缓冲限制，避免半份数据无限累积
+        m_store.setRetentionSeconds(static_cast<double>(m_viewSpanSpin->value()) / 1000.0);
+        if (m_scope)
+            m_scope->setBufferUnlimited(false);
         QMessageBox::warning(this, QStringLiteral("导入 CSV"), message);
     }
 
@@ -1500,7 +1527,9 @@ void Baud::updateStatus()
     m_statusFrameRate->setText(QStringLiteral("接收帧率: %1 fps · 绘制: %2 ms")
                                    .arg(m_frameRate)
                                    .arg(replotMs));
-    m_statusSamples->setText(QStringLiteral("样本: %1").arg(m_store.sampleCount()));
+    // 环形缓冲按时间裁剪后，可用样本数 = sampleCount - firstStoredIndex
+    m_statusSamples->setText(QStringLiteral("样本: %1")
+                                 .arg(m_store.sampleCount() - m_store.firstStoredIndex()));
     m_statusChannels->setText(QStringLiteral("通道: %1").arg(m_store.channelCount()));
 
     // 实测采样周期与抖动：由接收节奏自动推算，无需用户填写 Δt
@@ -1778,7 +1807,10 @@ void Baud::appendRawData(const QByteArray &bytes)
 void Baud::resetSession()
 {
     m_store.clear();
+    // 结束上一次导入的“无限制”状态，恢复缓冲窗口（硬上限）
+    m_store.setRetentionSeconds(static_cast<double>(m_viewSpanSpin->value()) / 1000.0);
     if (m_scope) {
+        m_scope->setBufferUnlimited(false);
         m_scope->setChannelCount(0);
         m_scope->clearData();
     }

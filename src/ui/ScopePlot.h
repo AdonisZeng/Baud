@@ -70,6 +70,9 @@ public:
     void refreshChannelNames();
     void clearData();
     qint64 viewSpan() const;
+    // 关闭/恢复“缓冲窗口”限制：CSV 导入的是离线文件，需要能整体回看。
+    // 恢复限制时立即按窗口裁剪曲线数据。
+    void setBufferUnlimited(bool unlimited);
 
 signals:
     void viewSpanChanged(qint64 spanMs);
@@ -112,10 +115,16 @@ private:
     void rebuildValueLabels(int count);
 
     // 以“最新时刻 - 窗口长度”为显示窗口；无数据时窗口为 [-span, 0]，
-    // 让左右边界在连接前就可见。
+    // 让左右边界在连接前就可见。导入（无限制）模式下显示整段数据。
     void applyWindow();
     void setXRangeProgrammatic(double lower, double upper);
     void setYRangeProgrammatic(double lower, double upper);
+    // 缓冲区两端的时间坐标（左界/右界游标就画在这里，不再固定贴视口）
+    void bufferRange(double &lower, double &upper) const;
+    // 缩放/拖动后把 X 范围夹回缓冲窗口（宽度不超过窗口长度）
+    void clampXRange();
+    // 按缓冲时长裁剪曲线数据；kCapacity 点数上限仍然兜底
+    void trimGraphData();
     // 只清曲线数据，保留用户固定的游标（暂停恢复时使用）
     void clearGraphData();
 
@@ -175,6 +184,9 @@ private:
     bool m_followLatest = true;
     bool m_autoY = true;
     bool m_paused = false;
+    // 为 true 时不按缓冲时长裁剪；缩放/平移范围改为“已加载数据的首尾”
+    // （CSV 导入的离线数据，仍受 kCapacity 点数上限约束）
+    bool m_bufferUnlimited = false;
     bool m_pressWasClick = false;
     bool m_hoverVerticalVisible = false;
     // 程序内调整坐标范围时置位，避免被当成用户缩放而关闭“跟随最新”/自动 Y

@@ -226,6 +226,80 @@ int main(int argc, char **argv)
               "Store 估计周期与时间戳器一致");
     }
 
+    // ---- 6b. 缓冲窗口：按时间裁剪数据（硬上限，超出即丢）----
+    {
+        ChannelStore store;
+        FrameBatch frames;
+        for (int i = 0; i < 1000; ++i) {
+            Frame frame;
+            frame.t = 0.001 * (i + 1);   // 1 kHz，共 1 s
+            frame.values = {static_cast<double>(i)};
+            frames.append(frame);
+        }
+        store.appendFrames(frames);
+        check(store.sampleCount() == 1000, "缓冲窗口：未设置时全部保留");
+
+        store.setRetentionSeconds(0.1);   // 只留最近 100 ms
+        const qint64 first = store.firstStoredIndex();
+        const qint64 last = store.sampleCount() - 1;
+        check(store.sampleCount() == 1000, "缓冲窗口：总样本计数不回退");
+        // 时间戳由浮点累加而来，边界样本可能落在 cutoff 两侧，允许 ±1
+        check(first >= 899 && first <= 901,
+              QStringLiteral("缓冲窗口：只保留最近 100 个样本（实测 %1）").arg(first));
+        check(store.timeAt(last) - store.timeAt(first) <= 0.1 + 1e-6,
+              "缓冲窗口：窗口内时间跨度不超过缓冲时长");
+        check(std::isnan(store.valueAt(0, 0)), "缓冲窗口：窗口外的旧数据不可再访问");
+        check(store.valueAt(0, last) == 999.0, "缓冲窗口：最新数据仍在");
+
+        store.setRetentionSeconds(0.05);
+        const qint64 trimmedFirst = store.firstStoredIndex();
+        check(trimmedFirst >= 949 && trimmedFirst <= 951,
+              QStringLiteral("缓冲窗口：缩短窗口后立即再裁剪（实测 %1）").arg(trimmedFirst));
+
+        store.setRetentionSeconds(0.0);
+        check(store.firstStoredIndex() == trimmedFirst,
+              "缓冲窗口：取消限制不会恢复已丢弃的数据");
+
+        // 边接收边裁剪：追加新批次时也要把窗口外的旧样本丢掉
+        ChannelStore live;
+        live.setRetentionSeconds(0.05);
+        live.appendFrames(frames.mid(0, 500));
+        live.appendFrames(frames.mid(500));
+        check(live.firstStoredIndex() >= 949 && live.firstStoredIndex() <= 951,
+              QStringLiteral("缓冲窗口：边接收边裁剪（实测 %1）")
+                  .arg(live.firstStoredIndex()));
+        check(live.valueAt(0, live.sampleCount() - 1) == 999.0,
+              "缓冲窗口：边接收边裁剪时最新数据仍在");
+    }
+
+    // ---- 6c. 从无限制切回有限制：m_firstIndex 落后时也必须按时间裁剪 ----
+    // 典型路径：CSV 导入把 retention 置 0 灌满环形缓冲，用户随后改一次缓冲窗口。
+    // 此时 m_firstIndex 仍停在 0，槽位已被新样本覆盖；若直接按时间扫描，
+    // 会读到偏新的时间而提前 break，时间裁剪失效、只剩容量上限生效。
+    {
+        ChannelStore store;
+        const int total = static_cast<int>(ChannelStore::kCapacity) + 1000;
+        FrameBatch frames;
+        frames.reserve(total);
+        for (int i = 0; i < total; ++i) {
+            Frame frame;
+            frame.t = 0.001 * (i + 1);
+            frame.values = {static_cast<double>(i)};
+            frames.append(frame);
+        }
+
+        store.setRetentionSeconds(0.0);   // 模拟 CSV 导入：无时间裁剪
+        store.appendFrames(frames);
+        check(store.firstStoredIndex() == total - static_cast<int>(ChannelStore::kCapacity),
+              "缓冲窗口：无限制时由容量上限决定最早样本");
+
+        store.setRetentionSeconds(0.1);   // 用户改回 100 ms
+        const qint64 kept = store.sampleCount() - store.firstStoredIndex();
+        check(kept >= 99 && kept <= 101,
+              QStringLiteral("缓冲窗口：从无限制切回限制后按时间裁剪（实测保留 %1 个）")
+                  .arg(kept));
+    }
+
     // ---- 7. CSV 导出 -> 导入 往返 ----
     {
         const QString path = QDir::tempPath() + "/baud_csv_roundtrip.csv";
@@ -487,11 +561,11 @@ int main(int argc, char **argv)
 
         check(lines.contains(QStringLiteral("| t_start_s | t_end_s | ch0 | ch1 |")),
               "精简 Markdown 表头包含起止时间列");
-        check(lines.contains(QStringLiteral("| 0.001000 | 0.002000 | 1 | 2 |")),
+        check(lines.contains(QStringLiteral("| 0.001 | 0.002 | 1 | 2 |")),
               "精简 Markdown：首段区间合并正确");
-        check(lines.contains(QStringLiteral("| 0.003000 | 0.004000 | 1 | 3 |")),
+        check(lines.contains(QStringLiteral("| 0.003 | 0.004 | 1 | 3 |")),
               "精简 Markdown：跨块相同值合并正确");
-        check(lines.contains(QStringLiteral("| 0.005000 | 0.005000 | 2 | 3 |")),
+        check(lines.contains(QStringLiteral("| 0.005 | 0.005 | 2 | 3 |")),
               "精简 Markdown：单点区间的起止时间相同");
 
         int dataRows = 0;
@@ -530,11 +604,190 @@ int main(int argc, char **argv)
         text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
         const QStringList lines = text.split(QLatin1Char('\n'));
 
-        check(lines.contains(QStringLiteral("0.001000,nan")), "CSV 导出：NaN 保持为 nan");
-        check(lines.contains(QStringLiteral("0.002000,inf")), "CSV 导出：+Inf 写成 inf");
-        check(lines.contains(QStringLiteral("0.003000,-inf")), "CSV 导出：-Inf 写成 -inf");
+        check(lines.contains(QStringLiteral("0.001,nan")), "CSV 导出：NaN 保持为 nan");
+        check(lines.contains(QStringLiteral("0.002,inf")), "CSV 导出：+Inf 写成 inf");
+        check(lines.contains(QStringLiteral("0.003,-inf")), "CSV 导出：-Inf 写成 -inf");
 
         QFile::remove(path);
+    }
+
+    // ---- 11b. 导入边界：非有限值 / 超通道数 / 空文件 / 大时间戳 ----
+    {
+        // 11b-1. 非有限值往返：自家导出的 nan / inf 必须能原样导回来
+        const QString path = QDir::tempPath() + "/baud_csv_nonfinite_roundtrip.csv";
+        QFile::remove(path);
+
+        const QVector<double> times = {0.001, 0.002, 0.003};
+        const QVector<double> values = {std::numeric_limits<double>::quiet_NaN(),
+                                        std::numeric_limits<double>::infinity(),
+                                        -std::numeric_limits<double>::infinity()};
+        DataExporter exporter;
+        exporter.open(path, QString(), 1, static_cast<int>(DataExporter::Format::Csv));
+        exporter.appendChunk(times, values);
+        exporter.close();
+
+        CsvImporter importer;
+        FrameBatch imported;
+        bool importOk = false;
+        qint64 importedRows = 0;
+        QObject::connect(&importer, &CsvImporter::framesParsed,
+                         [&imported](const FrameBatch &batch) { imported += batch; });
+        QObject::connect(&importer, &CsvImporter::imported,
+                         [&](bool ok, const QString &, qint64 rows, int) {
+                             importOk = ok;
+                             importedRows = rows;
+                         });
+        importer.importFile(path);
+
+        check(importOk, "非有限值往返：导入成功");
+        check(importedRows == 3,
+              QStringLiteral("非有限值往返：行数不丢（%1）").arg(importedRows));
+        check(imported.size() == 3, "非有限值往返：帧数不丢");
+        bool nonFiniteKept = imported.size() == 3;
+        if (nonFiniteKept) {
+            nonFiniteKept = std::isnan(imported.at(0).values.at(0))
+                && std::isinf(imported.at(1).values.at(0)) && imported.at(1).values.at(0) > 0.0
+                && std::isinf(imported.at(2).values.at(0)) && imported.at(2).values.at(0) < 0.0;
+        }
+        check(nonFiniteKept, "非有限值往返：nan / inf / -inf 原样保留");
+        QFile::remove(path);
+    }
+
+    // 11b-2. 超过 64 通道必须直接失败，不能“导入成功但缓冲区是空的”
+    {
+        const QString path = QDir::tempPath() + "/baud_csv_too_many_channels.csv";
+        QFile::remove(path);
+        QFile file(path);
+        if (file.open(QIODevice::WriteOnly)) {
+            QStringList header;
+            header << QStringLiteral("time_s");
+            for (int channel = 0; channel < 65; ++channel)
+                header << QStringLiteral("ch%1").arg(channel);
+            QByteArray content = header.join(QLatin1Char(',')).toUtf8() + "\n0.001";
+            for (int channel = 0; channel < 65; ++channel)
+                content += ",1";
+            content += "\n";
+            file.write(content);
+            file.close();
+        }
+
+        CsvImporter importer;
+        bool importOk = true;
+        QString message;
+        QObject::connect(&importer, &CsvImporter::imported,
+                         [&](bool ok, const QString &text, qint64, int) {
+                             importOk = ok;
+                             message = text;
+                         });
+        importer.importFile(path);
+
+        check(!importOk, "超通道数：导入被拒绝");
+        check(message.contains(QStringLiteral("64")),
+              QStringLiteral("超通道数：提示里写明上限（%1）").arg(message));
+        QFile::remove(path);
+    }
+
+    // 11b-3. 只有表头没有数据行：必须报错，不能报“已导入 0 行”
+    {
+        const QString path = QDir::tempPath() + "/baud_csv_no_rows.csv";
+        QFile::remove(path);
+        QFile file(path);
+        if (file.open(QIODevice::WriteOnly)) {
+            file.write("time_s,ch0\n");
+            file.close();
+        }
+
+        CsvImporter importer;
+        bool importOk = true;
+        QObject::connect(&importer, &CsvImporter::imported,
+                         [&](bool ok, const QString &, qint64, int) { importOk = ok; });
+        importer.importFile(path);
+
+        check(!importOk, "无数据行：导入报失败");
+        QFile::remove(path);
+    }
+
+    // 11b-4. 大时间戳（Unix 秒）下的重复时间戳必须被修正成严格递增
+    {
+        const QString path = QDir::tempPath() + "/baud_csv_epoch.csv";
+        QFile::remove(path);
+        QFile file(path);
+        if (file.open(QIODevice::WriteOnly)) {
+            const double base = 1700000000.0;
+            QByteArray content = "time_s,ch0\n";
+            content += QString::number(base, 'f', 6).toUtf8() + ",1\n";
+            content += QString::number(base, 'f', 6).toUtf8() + ",2\n";   // 与上一行重复
+            content += QString::number(base + 0.001, 'f', 6).toUtf8() + ",3\n";
+            file.write(content);
+            file.close();
+        }
+
+        CsvImporter importer;
+        FrameBatch imported;
+        bool importOk = false;
+        QObject::connect(&importer, &CsvImporter::framesParsed,
+                         [&imported](const FrameBatch &batch) { imported += batch; });
+        QObject::connect(&importer, &CsvImporter::imported,
+                         [&](bool ok, const QString &, qint64, int) { importOk = ok; });
+        importer.importFile(path);
+
+        check(importOk, "大时间戳：导入成功");
+        check(imported.size() == 3, "大时间戳：行数不丢");
+        bool strictlyIncreasing = imported.size() == 3;
+        for (int i = 1; i < imported.size() && strictlyIncreasing; ++i)
+            strictlyIncreasing = imported.at(i).t > imported.at(i - 1).t;
+        check(strictlyIncreasing, "大时间戳：重复时间戳被修正成严格递增");
+        QFile::remove(path);
+    }
+
+    // 11b-5. double 无损往返：FireWater 的 double 不能只保留 10 位有效数字
+    {
+        const QString path = QDir::tempPath() + "/baud_csv_double_precision.csv";
+        QFile::remove(path);
+
+        const QVector<double> times = {0.001, 0.002};
+        const QVector<double> values = {3.3, 1.0 / 3.0};
+        DataExporter exporter;
+        exporter.open(path, QString(), 1, static_cast<int>(DataExporter::Format::Csv));
+        exporter.appendChunk(times, values);
+        exporter.close();
+
+        CsvImporter importer;
+        FrameBatch imported;
+        QObject::connect(&importer, &CsvImporter::framesParsed,
+                         [&imported](const FrameBatch &batch) { imported += batch; });
+        importer.importFile(path);
+
+        bool exact = imported.size() == 2;
+        if (exact) {
+            exact = imported.at(0).values.at(0) == 3.3
+                && imported.at(1).values.at(0) == 1.0 / 3.0
+                && imported.at(0).t == 0.001
+                && imported.at(1).t == 0.002;
+        }
+        check(exact, "double 无损往返：3.3 与 1/3 精确还原");
+        QFile::remove(path);
+    }
+
+    // ---- 11c. 无损格式化的基本性质 ----
+    {
+        check(ValueFormat::roundTrip(3.3) == QStringLiteral("3.3"),
+              QStringLiteral("无损格式：3.3 不被改写（%1）").arg(ValueFormat::roundTrip(3.3)));
+        check(ValueFormat::roundTrip(0.001) == QStringLiteral("0.001"),
+              QStringLiteral("无损格式：0.001 不被改写（%1）")
+                  .arg(ValueFormat::roundTrip(0.001)));
+        check(ValueFormat::roundTrip(1234.5678) == QStringLiteral("1234.5678"),
+              QStringLiteral("无损格式：1234.5678 不被截断（%1）")
+                  .arg(ValueFormat::roundTrip(1234.5678)));
+        bool roundTrips = true;
+        const double samples[] = {3.3, 1.0 / 3.0, 1.0 / 7.0, 1234.5678, 1e-9, 1e18, -0.125, 0.0};
+        for (double sample : samples) {
+            bool ok = false;
+            const double parsed = ValueFormat::roundTrip(sample).toDouble(&ok);
+            if (!ok || parsed != sample)
+                roundTrips = false;
+        }
+        check(roundTrips, "无损格式：往返后数值完全一致");
     }
 
     // ---- 12. 通道配置：名称 / 类型 / 码值解码 / 持久化往返 ----

@@ -29,6 +29,7 @@ void ChannelStore::resetTimeline()
     m_data.clear();
     m_times.clear();
     m_sampleCount = 0;
+    m_firstIndex = 0;
 }
 
 FrameBatch ChannelStore::appendFrames(const FrameBatch &frames)
@@ -69,6 +70,7 @@ FrameBatch ChannelStore::appendFrames(const FrameBatch &frames)
         accepted.append(frame);
     }
 
+    trimByRetention();
     return accepted;
 }
 
@@ -77,6 +79,7 @@ void ChannelStore::clear()
     m_channelCount = 0;
     m_matchingChannelFrames = 0;
     m_sampleCount = 0;
+    m_firstIndex = 0;
     m_data.clear();
     m_times.clear();
 }
@@ -91,9 +94,55 @@ qint64 ChannelStore::sampleCount() const
     return m_sampleCount;
 }
 
+void ChannelStore::setRetentionSeconds(double seconds)
+{
+    m_retentionSeconds = (std::isfinite(seconds) && seconds > 0.0) ? seconds : 0.0;
+    trimByRetention();
+}
+
+double ChannelStore::retentionSeconds() const
+{
+    return m_retentionSeconds;
+}
+
 qint64 ChannelStore::firstStoredIndex() const
 {
-    return std::max<qint64>(0, m_sampleCount - kCapacity);
+    return std::max<qint64>(std::max<qint64>(0, m_firstIndex), m_sampleCount - kCapacity);
+}
+
+double ChannelStore::rawTime(qint64 index) const
+{
+    if (index < 0 || index >= m_sampleCount || m_times.isEmpty())
+        return std::numeric_limits<double>::quiet_NaN();
+    return m_times.at(index % kCapacity);
+}
+
+// 按保留时长前移 m_firstIndex；容量上限（kCapacity）仍然生效，
+// 两者取更严格者，保证任何采样率下内存与导出范围都不失控。
+void ChannelStore::trimByRetention()
+{
+    if (m_retentionSeconds <= 0.0 || m_sampleCount <= 1 || m_times.isEmpty())
+        return;
+
+    // 容量上限必须先对齐：无限制模式（retention=0，例如 CSV 导入）或单批
+    // 超过 kCapacity 时，m_firstIndex 会落后于环形缓冲的实际起点，它对应的
+    // 槽位已被更新的样本覆盖。若先按时间扫描，rawTime() 读到偏新的时间会
+    // 立刻 break，时间裁剪就退化成只剩容量上限（导出范围仍是 20 万点）。
+    const qint64 capacityFirst = m_sampleCount - kCapacity;
+    if (m_firstIndex < capacityFirst)
+        m_firstIndex = capacityFirst;
+
+    const double latest = rawTime(m_sampleCount - 1);
+    if (!std::isfinite(latest))
+        return;
+
+    const double cutoff = latest - m_retentionSeconds;
+    while (m_firstIndex + 1 < m_sampleCount) {
+        const double time = rawTime(m_firstIndex);
+        if (std::isfinite(time) && time >= cutoff)
+            break;
+        ++m_firstIndex;
+    }
 }
 
 double ChannelStore::valueAt(int channel, qint64 index) const

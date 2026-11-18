@@ -53,8 +53,11 @@ bool editCodeTable(QWidget *parent, const QString &typeId, QVector<ChannelCode> 
         table->setItem(row, 1, valueItem);
     };
 
-    for (const ChannelCode &code : codes)
-        fillRow(table->rowCount(), code.name, ValueFormat::format(code.value));
+    for (const ChannelCode &code : codes) {
+        // 用无损往返格式回填：显示用的紧凑格式会截断有效位
+        // （1234.5678 -> 1234.57），用户只是打开码表再点确定也会把码值改掉。
+        fillRow(table->rowCount(), code.name, ValueFormat::roundTrip(code.value));
+    }
 
     QHBoxLayout *buttonLayout = new QHBoxLayout;
     QPushButton *addButton = new QPushButton(QStringLiteral("添加码值"), &dialog);

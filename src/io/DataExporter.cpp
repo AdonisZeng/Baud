@@ -3,6 +3,8 @@
 
 #include "DataExporter.h"
 
+#include "ui/ValueFormat.h"
+
 #include <QFile>
 #include <QStringList>
 #include <QTextStream>
@@ -10,16 +12,13 @@
 #include <cmath>
 
 namespace {
-// 数据列：10 位有效数字，足够无损还原 float32 采样值。
+// 数据列用无损往返格式：JustFloat 是 float32、FireWater 是 double，
+// 统一按 double 无损输出（ValueFormat::roundTrip），导入端才能原样还原。
 // 非有限值按原样写 nan / inf / -inf：此前 +Inf 被写成 "nan"，
-// 会把“溢出”误读成“无效值”（CSV 导入端仍按既定策略拒绝非有限值）。
+// 会把“溢出”误读成“无效值”；导入端会保留这些值（绘图与统计自动跳过）。
 QString formatCell(double value)
 {
-    if (std::isnan(value))
-        return QStringLiteral("nan");
-    if (std::isinf(value))
-        return value > 0.0 ? QStringLiteral("inf") : QStringLiteral("-inf");
-    return QString::number(value, 'g', 10);
+    return ValueFormat::roundTrip(value);
 }
 
 // NaN != NaN，但“连续相同值”里两个 NaN 应视为同一段
@@ -142,14 +141,14 @@ void DataExporter::writeSampleRows(const QVector<double> &times, const QVector<d
     for (int row = 0; row < rows; ++row) {
         const int base = row * m_channelCount;
         if (m_format == Format::Csv) {
-            *m_stream << QString::number(times.at(row), 'f', 6);
+            *m_stream << ValueFormat::roundTrip(times.at(row));
             for (int channel = 0; channel < m_channelCount; ++channel) {
                 *m_stream << QLatin1Char(',');
                 const int index = base + channel;
                 *m_stream << formatCell(index < values.size() ? values.at(index) : 0.0);
             }
         } else {
-            *m_stream << QStringLiteral("| ") << QString::number(times.at(row), 'f', 6);
+            *m_stream << QStringLiteral("| ") << ValueFormat::roundTrip(times.at(row));
             for (int channel = 0; channel < m_channelCount; ++channel) {
                 const int index = base + channel;
                 *m_stream << QStringLiteral(" | ")
@@ -204,8 +203,8 @@ void DataExporter::flushRun()
     if (!m_runOpen || !m_stream)
         return;
 
-    *m_stream << QStringLiteral("| ") << QString::number(m_runStart, 'f', 6)
-              << QStringLiteral(" | ") << QString::number(m_runEnd, 'f', 6);
+    *m_stream << QStringLiteral("| ") << ValueFormat::roundTrip(m_runStart)
+              << QStringLiteral(" | ") << ValueFormat::roundTrip(m_runEnd);
     for (int channel = 0; channel < m_runValues.size(); ++channel)
         *m_stream << QStringLiteral(" | ") << formatCell(m_runValues.at(channel));
     *m_stream << QStringLiteral(" |") << Qt::endl;
