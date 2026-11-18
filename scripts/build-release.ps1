@@ -89,7 +89,8 @@ if (-not (Test-Path -LiteralPath $releaseExe)) {
 }
 
 $exeVersion = (Get-Item -LiteralPath $releaseExe).VersionInfo.FileVersion
-if ($exeVersion -notlike "$version*") {
+# 精确比对：前缀匹配会把 1.2.3 与旧的 1.2.30 混为一谈
+if ($exeVersion -ne $version -and $exeVersion -ne "$version.0") {
     throw "Baud.exe 版本 $exeVersion 与 src\Version.h 的 $version 不一致。"
 }
 

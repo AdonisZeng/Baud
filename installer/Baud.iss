@@ -35,7 +35,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+; 更新器总是带 /ALLUSERS 或 /CURRENTUSER 启动安装包，
+; 不开 commandline 覆盖时这两个开关不生效（机器级更新会装到用户目录）。
+PrivilegesRequiredOverridesAllowed=dialog commandline
 UsePreviousPrivileges=yes
 CloseApplications=yes
 RestartApplications=no
