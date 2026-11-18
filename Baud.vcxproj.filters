@@ -68,6 +68,9 @@
     <QtMoc Include="src\serial\SerialWorker.h">
       <Filter>Serial</Filter>
     </QtMoc>
+    <QtMoc Include="src\ui\ChannelConfigDialog.h">
+      <Filter>UI</Filter>
+    </QtMoc>
     <QtMoc Include="src\ui\ScopePlot.h">
       <Filter>UI</Filter>
     </QtMoc>
@@ -110,7 +113,13 @@
     <ClCompile Include="src\model\ChannelStore.cpp">
       <Filter>Model</Filter>
     </ClCompile>
+    <ClCompile Include="src\model\ChannelConfig.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
     <ClCompile Include="src\ui\Theme.cpp">
+      <Filter>UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ui\ChannelConfigDialog.cpp">
       <Filter>UI</Filter>
     </ClCompile>
     <ClCompile Include="src\ui\ScopePlot.cpp">
@@ -147,6 +156,9 @@
       <Filter>Serial</Filter>
     </ClInclude>
     <ClInclude Include="src\model\ChannelStore.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="src\model\ChannelConfig.h">
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="src\ui\TimeFormat.h">

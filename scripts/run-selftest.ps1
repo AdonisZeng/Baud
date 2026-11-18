@@ -47,6 +47,7 @@ $sources = @(
     'src\serial\TimestamperTest.cpp',
     'src\serial\FrameTimestamper.cpp',
     'src\model\ChannelStore.cpp',
+    'src\model\ChannelConfig.cpp',
     'src\protocol\JustFloatParser.cpp',
     'src\protocol\FireWaterParser.cpp',
     'src\io\DataExporter.cpp',

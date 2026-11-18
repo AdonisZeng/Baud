@@ -121,6 +121,7 @@ if exist "$(ProjectDir)LICENSES\LGPL-3.0.txt" copy /Y "$(ProjectDir)LICENSES\LGP
     <QtMoc Include="src\io\DataExporter.h"/>
     <QtMoc Include="src\io\CsvImporter.h"/>
     <QtMoc Include="src\serial\SerialWorker.h"/>
+    <QtMoc Include="src\ui\ChannelConfigDialog.h"/>
     <QtMoc Include="src\ui\ScopePlot.h"/>
     <QtMoc Include="src\update\UpdateChecker.h"/>
     <QtMoc Include="src\update\UpdateDialog.h"/>
@@ -135,11 +136,14 @@ if exist "$(ProjectDir)LICENSES\LGPL-3.0.txt" copy /Y "$(ProjectDir)LICENSES\LGP
     <ClCompile Include="src\serial\SerialWorker.cpp"/>
     <ClCompile Include="src\serial\FrameTimestamper.cpp"/>
     <ClCompile Include="src\model\ChannelStore.cpp"/>
+    <ClCompile Include="src\model\ChannelConfig.cpp"/>
     <ClCompile Include="src\ui\Theme.cpp"/>
+    <ClCompile Include="src\ui\ChannelConfigDialog.cpp"/>
     <ClCompile Include="src\ui\ScopePlot.cpp"/>
     <ClCompile Include="src\update\UpdateChecker.cpp"/>
     <ClCompile Include="src\update\UpdateDialog.cpp"/>
     <ClInclude Include="src\Version.h"/>
+    <ClInclude Include="src\model\ChannelConfig.h"/>
     <ClInclude Include="src\serial\FrameTimestamper.h"/>
     <ClInclude Include="src\ui\TimeFormat.h"/>
     <ClInclude Include="src\ui\ValueFormat.h"/>

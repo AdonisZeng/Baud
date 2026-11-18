@@ -6,6 +6,7 @@
 #include "io/DataExporter.h"
 #include "io/CsvImporter.h"
 #include "serial/SerialWorker.h"
+#include "ui/ChannelConfigDialog.h"
 #include "ui/ScopePlot.h"
 #include "ui/Theme.h"
 #include "ui/TimeFormat.h"
@@ -108,6 +109,14 @@ QString userGuideHtml()
 <li>测量区间（A→B）面板显示 Δt 以及每个可见通道在该区间内的最小 / 最大值。</li>
 </ul>
 
+<h3>通道配置（名称 / 状态码 / 错误码）</h3>
+<ul>
+<li><b>改名</b>：双击通道表里的“通道”列直接改名，或点左侧面板的“通道配置…”。新名字会同步到波形图例与悬停提示，配置会被记住。</li>
+<li><b>码值解释</b>：不同工程、不同工程师的状态码 / 错误码定义都不一样，可以在“通道配置 → 通道类型”里新增自己的类型（如 <code>foc.state</code>、<code>prot_val.fault</code>），并给每种类型定义“码名 = 码值”（例如 <code>RUN = 6</code>）。</li>
+<li>给通道指定类型后，波形悬停提示与通道表当前值会直接显示成 <b>码名：码值</b>（如 <code>RUN：6</code>），不用再对着数字猜含义。</li>
+<li>“视图 → 通道配置…”是同一个入口；导出的 CSV / Markdown 元数据里也会带上通道名称。</li>
+</ul>
+
 <h3>发送</h3>
 <ul>
 <li>ASCII 或 HEX 发送，可选 CR / LF / CRLF 行尾；HEX 允许空格、逗号和 0x 前缀。</li>
@@ -133,7 +142,8 @@ QString userGuideHtml()
 
 // 导出文件的元数据头：CSV 用 # 注释行，Markdown 用标题 + 列表
 QString buildExportMeta(DataExporter::Format format, const QString &protocolName,
-                        double periodSeconds, int channelCount, qint64 rowCount)
+                        double periodSeconds, int channelCount, qint64 rowCount,
+                        const QStringList &channelNames)
 {
     const QString created = QDateTime::currentDateTime().toString(Qt::ISODate);
     const QString sampleRate =
@@ -151,6 +161,8 @@ QString buildExportMeta(DataExporter::Format format, const QString &protocolName
         meta << QStringLiteral("# sample_rate=%1").arg(sampleRate);
         meta << QStringLiteral("# dt_auto=%1").arg(dt);
         meta << QStringLiteral("# channels=%1").arg(channelCount);
+        if (!channelNames.isEmpty())
+            meta << QStringLiteral("# channel_names=%1").arg(channelNames.join(QLatin1Char(',')));
         meta << QStringLiteral("# rows=%1").arg(rowCount);
         return meta.join(QLatin1Char('\n')) + QLatin1Char('\n');
     }
@@ -172,6 +184,8 @@ QString buildExportMeta(DataExporter::Format format, const QString &protocolName
     meta << QStringLiteral("- 采样率：%1 Hz").arg(sampleRate);
     meta << QStringLiteral("- 自动估计 Δt：%1 s").arg(dt);
     meta << QStringLiteral("- 通道数：%1").arg(channelCount);
+    if (!channelNames.isEmpty())
+        meta << QStringLiteral("- 通道名称：%1").arg(channelNames.join(QStringLiteral("、")));
     meta << (compact ? QStringLiteral("- 原始采样点数：%1").arg(rowCount)
                      : QStringLiteral("- 采样行数：%1").arg(rowCount));
     meta << QString();
@@ -191,6 +205,8 @@ Baud::Baud(QWidget *parent)
     : QMainWindow(parent)
 {
     ui.setupUi(this);
+    // 通道名称 / 类型 / 码表是持久化配置，先读回来再建界面
+    m_channelConfig.load();
     buildUi();
     setupSerialThread();
     setupTimers();
@@ -258,6 +274,11 @@ void Baud::buildUi()
     });
     QAction *clearAction = viewMenu->addAction(QStringLiteral("清空"));
     connect(clearAction, &QAction::triggered, this, &Baud::onClearClicked);
+    viewMenu->addSeparator();
+    QAction *channelConfigAction = viewMenu->addAction(QStringLiteral("通道配置…"));
+    channelConfigAction->setToolTip(QStringLiteral(
+        "自定义通道名称、通道类型（状态码 / 错误码）与码表"));
+    connect(channelConfigAction, &QAction::triggered, this, &Baud::showChannelConfigDialog);
 
     QMenu *helpMenu = menuBar()->addMenu(QStringLiteral("帮助"));
     QAction *guideAction = helpMenu->addAction(QStringLiteral("操作指南"));
@@ -433,7 +454,10 @@ void Baud::buildUi()
     m_channelTable->setHorizontalHeaderLabels(
         {QStringLiteral("显示"), QStringLiteral("通道"), QStringLiteral("当前值"),
          QStringLiteral("最小"), QStringLiteral("最大")});
-    m_channelTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    // 只有“通道”列可编辑（双击改名），其余列的单元格没有 Editable 标记
+    m_channelTable->setEditTriggers(QAbstractItemView::DoubleClicked
+                                    | QAbstractItemView::EditKeyPressed
+                                    | QAbstractItemView::AnyKeyPressed);
     m_channelTable->setSelectionMode(QAbstractItemView::NoSelection);
     m_channelTable->setAlternatingRowColors(true);
     m_channelTable->setShowGrid(false);
@@ -445,11 +469,19 @@ void Baud::buildUi()
     channelHeader->setSectionResizeMode(2, QHeaderView::Stretch);
     channelHeader->setSectionResizeMode(3, QHeaderView::Fixed);
     channelHeader->setSectionResizeMode(4, QHeaderView::Fixed);
-    m_channelTable->setColumnWidth(0, 42);
-    m_channelTable->setColumnWidth(1, 60);
-    m_channelTable->setColumnWidth(3, 58);
-    m_channelTable->setColumnWidth(4, 58);
+    m_channelTable->setColumnWidth(0, 34);
+    // 名称列放宽：自定义名称（甚至“码名：码值”式的当前值）容易被省略号截断
+    m_channelTable->setColumnWidth(1, 96);
+    m_channelTable->setColumnWidth(3, 52);
+    m_channelTable->setColumnWidth(4, 52);
     channelLayout->addWidget(m_channelTable);
+
+    // 通道配置入口：自定义名称、通道类型（状态码 / 错误码）与码表
+    m_channelConfigButton = new QPushButton(QStringLiteral("通道配置…"), channelGroup);
+    m_channelConfigButton->setToolTip(QStringLiteral(
+        "自定义通道名称、通道类型（状态码 / 错误码）与码值表；"
+        "也可以直接双击通道表里的名称列改名"));
+    channelLayout->addWidget(m_channelConfigButton);
     leftLayout->addWidget(channelGroup, 1);
 
     // 测量区间面板：A/B 之间的每通道极值。原先挤在波形下方的小字标签看不清，
@@ -494,7 +526,7 @@ void Baud::buildUi()
     measureHeader->setSectionResizeMode(0, QHeaderView::Fixed);
     measureHeader->setSectionResizeMode(1, QHeaderView::Stretch);
     measureHeader->setSectionResizeMode(2, QHeaderView::Stretch);
-    m_measureTable->setColumnWidth(0, 58);
+    m_measureTable->setColumnWidth(0, 72);
     // 通道多时表格内部滚动，别把左侧面板顶爆
     m_measureTable->setMaximumHeight(120);
     measureLayout->addWidget(m_measureTable);
@@ -542,6 +574,7 @@ void Baud::buildUi()
 
     m_scope = new ScopePlot(scopePage);
     m_scope->setStore(&m_store);
+    m_scope->setChannelConfig(&m_channelConfig);
     scopeLayout->addWidget(m_scope, 1);
     m_stack->addWidget(scopePage);
 
@@ -682,7 +715,7 @@ void Baud::buildUi()
                     };
 
                     QTableWidgetItem *nameItem = ensureItem(0);
-                    nameItem->setText(QStringLiteral("CH%1").arg(stat.channel));
+                    nameItem->setText(m_channelConfig.channelName(stat.channel));
                     nameItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
                     nameItem->setForeground(Theme::channelColor(stat.channel));
                     // 行的顺序只包含可见通道，主题切换要按真实通道号重新取色
@@ -706,11 +739,32 @@ void Baud::buildUi()
 
     connect(m_channelTable, &QTableWidget::itemChanged, this,
             [this](QTableWidgetItem *item) {
-                if (!item || item->column() != 0 || !m_scope)
+                if (!item || !m_scope)
                     return;
-                m_scope->setChannelVisible(item->row(),
-                                           item->checkState() == Qt::Checked);
+                if (item->column() == 0) {
+                    m_scope->setChannelVisible(item->row(),
+                                               item->checkState() == Qt::Checked);
+                    return;
+                }
+                if (item->column() == 1) {
+                    // 双击改名：立刻同步到图例与悬停提示
+                    const int channel = item->row();
+                    const QString name = item->text().trimmed();
+                    m_channelConfig.setChannelName(channel, name);
+                    if (name.isEmpty()) {
+                        // 留空则回退到默认名称，保持表与图例一致
+                        QSignalBlocker blocker(m_channelTable);
+                        item->setText(m_channelConfig.channelName(channel));
+                    }
+                    m_channelConfig.save();
+                    m_scope->refreshChannelNames();
+                    item->setToolTip(channelTypeTooltip(channel));
+                    updateMeasureChannelNames();
+                }
             });
+
+    connect(m_channelConfigButton, &QPushButton::clicked,
+            this, &Baud::showChannelConfigDialog);
 
     m_protocolCombo->setCurrentIndex(0);
     m_stack->setCurrentIndex(0);
@@ -1240,9 +1294,13 @@ void Baud::startExport(DataExporter::Format format)
     statusBar()->showMessage(busyText, 0);
     updateConnectionUi();
 
+    QStringList channelNames;
+    for (int channel = 0; channel < m_store.channelCount(); ++channel)
+        channelNames.append(m_channelConfig.channelName(channel));
+
     const QString meta = buildExportMeta(format, protocolDisplayName(currentProtocol()),
                                          m_store.estimatedPeriod(), m_store.channelCount(),
-                                         m_exportTo - m_exportFrom + 1);
+                                         m_exportTo - m_exportFrom + 1, channelNames);
 
     m_exportThread->start();
     // invokeMethod 找不到槽或参数类型未注册时只返回 false（并往 stderr 打一行），
@@ -1467,9 +1525,10 @@ void Baud::rebuildChannelTable(int channelCount)
         checkItem->setCheckState(Qt::Checked);
         m_channelTable->setItem(channel, 0, checkItem);
 
-        QTableWidgetItem *nameItem =
-            new QTableWidgetItem(channelSwatch(channel), QStringLiteral("CH%1").arg(channel));
-        nameItem->setFlags(Qt::ItemIsEnabled);
+        QTableWidgetItem *nameItem = new QTableWidgetItem(
+            channelSwatch(channel), m_channelConfig.channelName(channel));
+        nameItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsEditable);
+        nameItem->setToolTip(channelTypeTooltip(channel));
         m_channelTable->setItem(channel, 1, nameItem);
 
         for (int column = 2; column <= 4; ++column) {
@@ -1507,7 +1566,23 @@ void Baud::updateChannelTable()
 
     QSignalBlocker blocker(m_channelTable);
     for (int channel = 0; channel < channelCount; ++channel) {
-        setValueCell(channel, 2, true, latest.at(channel));
+        // 当前值：命中码表时显示“码名：码值”，否则显示数值
+        const double current = latest.at(channel);
+        const QString code = m_channelConfig.codeName(channel, current);
+        if (QTableWidgetItem *item = m_channelTable->item(channel, 2)) {
+            const QString text = code.isEmpty()
+                                     ? ValueFormat::format(current)
+                                     : QStringLiteral("%1：%2").arg(code,
+                                                                   ValueFormat::format(current));
+            const QString tip = code.isEmpty()
+                                    ? ValueFormat::formatExact(current)
+                                    : QStringLiteral("%1：%2").arg(code,
+                                                                  ValueFormat::formatExact(current));
+            if (item->text() != text)
+                item->setText(text);
+            if (item->toolTip() != tip)
+                item->setToolTip(tip);
+        }
 
         double minValue = 0.0;
         double maxValue = 0.0;
@@ -1529,6 +1604,69 @@ void Baud::refreshChannelSwatches()
         if (QTableWidgetItem *item = m_channelTable->item(channel, 1))
             item->setIcon(channelSwatch(channel));
     }
+}
+
+// 通道配置对话框：编辑在副本上进行，确定后才写回并持久化
+void Baud::showChannelConfigDialog()
+{
+    ChannelConfigDialog dialog(m_channelConfig, m_store.channelCount(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    m_channelConfig = dialog.config();
+    m_channelConfig.save();
+    applyChannelConfigToUi();
+    statusBar()->showMessage(QStringLiteral("通道配置已保存"), 3000);
+}
+
+// 配置改动后同步到图例、通道表与测量面板
+void Baud::applyChannelConfigToUi()
+{
+    if (m_scope)
+        m_scope->refreshChannelNames();
+
+    if (m_channelTable) {
+        QSignalBlocker blocker(m_channelTable);
+        for (int channel = 0; channel < m_channelTable->rowCount(); ++channel) {
+            QTableWidgetItem *item = m_channelTable->item(channel, 1);
+            if (!item)
+                continue;
+            const QString name = m_channelConfig.channelName(channel);
+            if (item->text() != name)
+                item->setText(name);
+            item->setToolTip(channelTypeTooltip(channel));
+        }
+    }
+
+    updateMeasureChannelNames();
+}
+
+// 测量面板只显示可见通道，通道改名后要同步名称
+void Baud::updateMeasureChannelNames()
+{
+    if (!m_measureTable)
+        return;
+
+    QSignalBlocker blocker(m_measureTable);
+    for (int row = 0; row < m_measureTable->rowCount(); ++row) {
+        QTableWidgetItem *item = m_measureTable->item(row, 0);
+        if (!item)
+            continue;
+        const int channel = item->data(Qt::UserRole).toInt();
+        item->setText(m_channelConfig.channelName(channel));
+    }
+}
+
+// 通道名称单元格的提示：完整名称 + 类型
+QString Baud::channelTypeTooltip(int channel) const
+{
+    QStringList lines;
+    lines << QStringLiteral("名称：%1").arg(m_channelConfig.channelName(channel));
+    const QString typeId = m_channelConfig.channelTypeId(channel);
+    if (!typeId.isEmpty())
+        lines << QStringLiteral("类型：%1").arg(typeId);
+    lines << QStringLiteral("双击可改名");
+    return lines.join(QLatin1Char('\n'));
 }
 
 void Baud::updateThemeButton()
@@ -1729,5 +1867,10 @@ void Baud::closeEvent(QCloseEvent *event)
 
     stopSerialThread();
     stopIoThreads();
+
+    // 解除波形控件对通道配置的引用：Baud 的成员比子控件先析构，
+    // 不解除的话 m_scope 析构时 m_channelConfig 可能已经是悬空指针。
+    if (m_scope)
+        m_scope->setChannelConfig(nullptr);
     event->accept();
 }

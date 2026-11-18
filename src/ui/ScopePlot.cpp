@@ -9,6 +9,7 @@
 
 #include <QContextMenuEvent>
 #include <QFont>
+#include <QFontMetrics>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -251,7 +252,7 @@ void ScopePlot::setChannelCount(int count)
 
     for (int channel = 0; channel < count; ++channel) {
         QCPGraph *graph = addGraph();
-        graph->setName(QStringLiteral("CH%1").arg(channel));
+        graph->setName(channelDisplayName(channel));
         graph->setPen(QPen(Theme::channelColor(channel), 1.0));
         graph->setLineStyle(QCPGraph::lsLine);
         graph->setAntialiased(false);
@@ -420,8 +421,11 @@ void ScopePlot::setFollowLatest(bool follow)
     applyWindow();
     if (!m_paused && m_latestSample >= 0 && m_autoY)
         refresh();
-    else
+    else {
+        if (m_mouseInside)
+            syncHover(m_lastMousePos, false);
         replot(QCustomPlot::rpQueuedReplot);
+    }
 }
 
 void ScopePlot::setPaused(bool paused)
@@ -504,6 +508,10 @@ void ScopePlot::refresh()
     }
 
     syncMarkers();
+    // 悬停竖线按鼠标像素锚定：窗口滚动后重新按像素算一次时间与数值，
+    // 竖线不会跟着波形左移，但穿过竖线的通道值会实时刷新。
+    if (m_mouseInside)
+        syncHover(m_lastMousePos, false);
     if (m_measureTimer.hasExpired(250)) {
         updateMeasurement();
         m_measureTimer.restart();
@@ -704,26 +712,47 @@ double ScopePlot::sampleValueAt(const QCPGraph *graph, double time) const
         return std::numeric_limits<double>::quiet_NaN();
 
     const auto data = graph->data();
-    // 图形数据按时间递增存放，二分定位到 time 附近的两个点
+    // 图形数据按时间递增存放，二分定位到 time 附近的点
     auto it = data->findBegin(time, false);
     if (it == data->constEnd()) {
         if (it == data->constBegin())
             return std::numeric_limits<double>::quiet_NaN();
         --it;
-        return it->value;
     }
 
-    double nearest = it->value;
-    double distance = std::fabs(it->key - time);
+    double nearest = std::numeric_limits<double>::quiet_NaN();
+    double distance = std::numeric_limits<double>::max();
+
+    // 候选点：定位点、前后各一个；跳过 NaN（断流标记），
+    // 否则断流点正好落在竖线附近时，该通道的值会整段消失。
+    const auto consider = [&](auto candidate) {
+        if (candidate == data->constEnd())
+            return;
+        const double value = candidate->value;
+        if (!std::isfinite(value))
+            return;
+        const double candidateDistance = std::fabs(candidate->key - time);
+        if (candidateDistance < distance) {
+            distance = candidateDistance;
+            nearest = value;
+        }
+    };
+
+    consider(it);
     if (it != data->constBegin()) {
         auto previous = it;
         --previous;
-        const double previousDistance = std::fabs(previous->key - time);
-        if (previousDistance < distance) {
-            nearest = previous->value;
-            distance = previousDistance;
+        consider(previous);
+        // 再往前看一个，避开紧邻竖线的 NaN 断点
+        if (previous != data->constBegin()) {
+            --previous;
+            consider(previous);
         }
     }
+    auto next = it;
+    ++next;
+    consider(next);
+
     return nearest;
 }
 
@@ -901,8 +930,13 @@ void ScopePlot::clearMarkers()
     replot(QCustomPlot::rpQueuedReplot);
 }
 
-void ScopePlot::syncHover(const QPoint &pos)
+void ScopePlot::syncHover(const QPoint &pos, bool requestReplot)
 {
+    // 记住鼠标位置：波形刷新导致 X 轴滚动时，竖线仍按这个像素锚定，
+    // 不会被新数据“拉着往左走”，只有它对应的时间与数值随波形更新。
+    m_lastMousePos = pos;
+    m_mouseInside = true;
+
     const bool onX = isXBand(pos);
     const bool onY = isYBand(pos);
     const bool onPlot = isPlotArea(pos);
@@ -916,7 +950,8 @@ void ScopePlot::syncHover(const QPoint &pos)
         label->setVisible(false);
 
     if (!m_hoverVerticalVisible && !onY) {
-        replot(QCustomPlot::rpQueuedReplot);
+        if (requestReplot)
+            replot(QCustomPlot::rpQueuedReplot);
         return;
     }
 
@@ -930,6 +965,20 @@ void ScopePlot::syncHover(const QPoint &pos)
             qBound<double>(rect.left(), pos.x(), rect.right()), rect.bottom() + 24);
         m_hoverXBadge->setVisible(true);
 
+        // 先算出各可见通道在竖线处的数值，再统一排布标签：
+        // 波形挨得很近时数值标签会叠在一起，只能看到其中一两个，
+        // 这里按 y 排序后依次推开，保证每个通道的值都能显示出来。
+        struct HoverValue {
+            int channel = 0;
+            double value = 0.0;
+            double anchorX = 0.0;
+            double anchorY = 0.0;
+            double textHeight = 0.0;
+            double textWidth = 0.0;
+            QString text;
+        };
+        QVector<HoverValue> values;
+
         for (int channel = 0; channel < m_graphs.size(); ++channel) {
             QCPGraph *graph = m_graphs.at(channel);
             QCPItemText *label = m_valueLabels.at(channel);
@@ -940,10 +989,64 @@ void ScopePlot::syncHover(const QPoint &pos)
                 || value > yAxis->range().upper) {
                 continue;
             }
-            label->setText(QStringLiteral("CH%1: %2")
-                               .arg(channel)
-                               .arg(formatValueText(value)));
-            label->position->setCoords(time, value);
+
+            HoverValue entry;
+            entry.channel = channel;
+            entry.value = value;
+            entry.anchorX = pos.x();
+            entry.anchorY = yAxis->coordToPixel(value);
+            entry.text = QStringLiteral("%1: %2").arg(channelDisplayName(channel),
+                                                     channelValueText(channel, value));
+            const QFontMetrics metrics(label->font());
+            // 标签自带内边距（上下各 1、左右各 3），排布时算进去才不会贴住
+            entry.textHeight = metrics.boundingRect(entry.text).height() + 2.0;
+            entry.textWidth = metrics.horizontalAdvance(entry.text) + 6.0;
+            values.append(entry);
+        }
+
+        std::sort(values.begin(), values.end(),
+                  [](const HoverValue &a, const HoverValue &b) {
+                      return a.anchorY < b.anchorY;
+                  });
+
+        // 标签底边对齐锚点，冲突时向下推开
+        const double gap = 2.0;
+        double lastBottom = -std::numeric_limits<double>::max();
+        for (HoverValue &entry : values) {
+            double top = entry.anchorY - entry.textHeight;
+            if (top < lastBottom + gap)
+                top = lastBottom + gap;
+            entry.anchorY = top + entry.textHeight;
+            lastBottom = entry.anchorY;
+        }
+
+        // 整体超出绘图区下边界时整体上移，避免最后一个标签被裁掉
+        if (!values.isEmpty()) {
+            const double overflow = lastBottom - rect.bottom();
+            if (overflow > 0.0) {
+                for (HoverValue &entry : values)
+                    entry.anchorY -= overflow;
+                const double minTop = values.first().anchorY - values.first().textHeight;
+                if (minTop < rect.top()) {
+                    const double shift = rect.top() - minTop;
+                    for (HoverValue &entry : values)
+                        entry.anchorY += shift;
+                }
+            }
+        }
+
+        for (const HoverValue &entry : values) {
+            QCPItemText *label = m_valueLabels.at(entry.channel);
+            // 贴着竖线显示，但文字不能被绘图区左右边缘裁掉
+            const double halfWidth = entry.textWidth / 2.0 + 4.0;
+            double x = entry.anchorX;
+            if (rect.width() > 2.0 * halfWidth) {
+                x = qBound<double>(rect.left() + halfWidth, x, rect.right() - halfWidth);
+            } else {
+                x = rect.center().x();
+            }
+            label->setText(entry.text);
+            label->position->setPixelPosition(QPointF(x, entry.anchorY));
             label->setVisible(true);
         }
     }
@@ -959,7 +1062,9 @@ void ScopePlot::syncHover(const QPoint &pos)
             qBound<double>(rect.top(), pos.y(), rect.bottom()));
         m_hoverYBadge->setVisible(true);
     }
-    replot(QCustomPlot::rpQueuedReplot);
+
+    if (requestReplot)
+        replot(QCustomPlot::rpQueuedReplot);
 }
 
 void ScopePlot::hideHover()
@@ -1074,8 +1179,11 @@ void ScopePlot::setViewSpan(qint64 span)
     updateMeasurement();
     if (!m_paused && m_latestSample >= 0 && m_autoY)
         refresh();
-    else
+    else {
+        if (m_mouseInside)
+            syncHover(m_lastMousePos, false);
         replot(QCustomPlot::rpQueuedReplot);
+    }
 }
 
 void ScopePlot::resetView()
@@ -1098,6 +1206,44 @@ void ScopePlot::setStore(const ChannelStore *store)
 {
     m_store = store;
     updateMeasurement();
+}
+
+void ScopePlot::setChannelConfig(const ChannelConfig *config)
+{
+    m_config = config;
+    // 传 nullptr 表示解除引用（退出时），此时不要把图例刷回 CH{n}
+    if (m_config)
+        refreshChannelNames();
+}
+
+// 通道名称改动后同步图例（图例里显示的就是自定义名称）
+void ScopePlot::refreshChannelNames()
+{
+    for (int channel = 0; channel < m_graphs.size(); ++channel)
+        m_graphs.at(channel)->setName(channelDisplayName(channel));
+    replot(QCustomPlot::rpQueuedReplot);
+}
+
+QString ScopePlot::channelDisplayName(int channel) const
+{
+    if (m_config) {
+        const QString name = m_config->channelName(channel);
+        if (!name.isEmpty())
+            return name;
+    }
+    return QStringLiteral("CH%1").arg(channel);
+}
+
+// 命中码表时显示“码名：码值”，否则显示数值本身
+QString ScopePlot::channelValueText(int channel, double value) const
+{
+    const QString number = formatValueText(value);
+    if (!m_config)
+        return number;
+    const QString code = m_config->codeName(channel, value);
+    if (code.isEmpty())
+        return number;
+    return QStringLiteral("%1：%2").arg(code, number);
 }
 
 void ScopePlot::wheelEvent(QWheelEvent *event)
@@ -1222,5 +1368,7 @@ void ScopePlot::contextMenuEvent(QContextMenuEvent *event)
 void ScopePlot::leaveEvent(QEvent *event)
 {
     QCustomPlot::leaveEvent(event);
+    // 鼠标离开后不再按像素锚定竖线，等下一次 mouseMove 再恢复
+    m_mouseInside = false;
     hideHover();
 }

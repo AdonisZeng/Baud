@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "model/ChannelConfig.h"
 #include "model/ChannelStore.h"
 #include "protocol/ProtocolTypes.h"
 
@@ -62,6 +63,11 @@ public:
     // 实测采样周期（秒），用于判断数据流中断并断开折线
     void setSamplePeriod(double seconds);
     void setStore(const ChannelStore *store);
+    // 通道配置（自定义名称 / 类型 / 码表），为空时全部按默认 CH{n} 处理。
+    // 允许传 nullptr：退出时解除引用，避免配置对象先于本控件析构。
+    void setChannelConfig(const ChannelConfig *config);
+    // 通道名称改动后刷新图例与悬停标签
+    void refreshChannelNames();
     void clearData();
     qint64 viewSpan() const;
 
@@ -123,7 +129,9 @@ private:
     void setMeasureEnd(bool start, const QPoint &pos);
     void removeMarkerAt(int index);
     void syncMarkers();
-    void syncHover(const QPoint &pos);
+    // 悬停竖线与数值标签。竖线按鼠标像素锚定：波形刷新导致 X 轴滚动时，
+    // 竖线仍停在鼠标位置，只有它对应的时间与数值随波形更新。
+    void syncHover(const QPoint &pos, bool requestReplot = true);
     void hideHover();
     void updateMeasurement();
     void setFollow(bool follow, bool autoY);
@@ -136,8 +144,13 @@ private:
     double sampleValueAt(const QCPGraph *graph, double time) const;
     // 时间坐标 -> 最接近的采样序号
     qint64 indexAtTime(double time) const;
+    // 通道显示名（自定义名称，未设置时为 CH{n}）
+    QString channelDisplayName(int channel) const;
+    // 通道数值显示文本：命中码表时为“码名：码值”，否则为数值本身
+    QString channelValueText(int channel, double value) const;
 
     const ChannelStore *m_store = nullptr;
+    const ChannelConfig *m_config = nullptr;
     QVector<QCPGraph *> m_graphs;
     QVector<QCPItemText *> m_valueLabels;
     QVector<Marker> m_markers;
@@ -149,6 +162,9 @@ private:
     QCPItemText *m_hoverYBadge = nullptr;
 
     QPoint m_pressPosition;
+    // 鼠标位置（控件坐标）：悬停竖线按它锚定，刷新时竖线不会被波形带走
+    QPoint m_lastMousePos;
+    bool m_mouseInside = false;
     qint64 m_latestSample = -1;    // 最新帧的序号（查环形缓冲用）
     double m_latestTime = 0.0;      // 最新帧的时间坐标（秒）
     qint64 m_viewSpan = kDefaultViewSpanMs;  // 视图窗口长度（毫秒）

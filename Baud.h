@@ -4,6 +4,7 @@
 #pragma once
 
 #include "io/DataExporter.h"
+#include "model/ChannelConfig.h"
 #include "model/ChannelStore.h"
 #include "protocol/ProtocolTypes.h"
 #include "serial/SerialSettings.h"
@@ -82,6 +83,14 @@ private:
     void rebuildChannelTable(int channelCount);
     void updateChannelTable();
     void refreshChannelSwatches();
+    // 通道配置：自定义名称、通道类型（状态码/错误码）与码表
+    void showChannelConfigDialog();
+    // 配置改动后同步到图例、通道表与测量面板
+    void applyChannelConfigToUi();
+    // 测量面板的通道名（改名后同步）
+    void updateMeasureChannelNames();
+    // 通道名称单元格的提示文字
+    QString channelTypeTooltip(int channel) const;
     void updateThemeButton();
     void showUserGuide();
     void startExport(DataExporter::Format format);
@@ -102,6 +111,7 @@ private:
     SerialWorker *m_worker = nullptr;
     QThread *m_serialThread = nullptr;
     ChannelStore m_store;
+    ChannelConfig m_channelConfig;
     ScopePlot *m_scope = nullptr;
     QStackedWidget *m_stack = nullptr;
     QSpinBox *m_viewSpanSpin = nullptr;
@@ -132,6 +142,7 @@ private:
     QAction *m_importAction = nullptr;
 
     QTableWidget *m_channelTable = nullptr;
+    QPushButton *m_channelConfigButton = nullptr;
     QPlainTextEdit *m_rawMonitor = nullptr;
     QComboBox *m_rawModeCombo = nullptr;
 

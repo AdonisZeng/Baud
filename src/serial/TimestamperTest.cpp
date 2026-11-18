@@ -6,6 +6,7 @@
 
 #include "serial/FrameTimestamper.h"
 #include "model/ChannelStore.h"
+#include "model/ChannelConfig.h"
 #include "io/DataExporter.h"
 #include "io/CsvImporter.h"
 #include "ui/ValueFormat.h"
@@ -13,6 +14,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QSettings>
 
 #include <cmath>
 #include <limits>
@@ -59,6 +61,13 @@ static void feed(FrameTimestamper &stamper, double now, int count,
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
+    // 通道配置用 QSettings 持久化：自测改用临时目录里的 INI 文件，
+    // 避免写注册表（没有组织名时 QSettings 根本没有可用路径）。
+    QCoreApplication::setOrganizationName(QStringLiteral("BaudSelfTest"));
+    QCoreApplication::setApplicationName(QStringLiteral("BaudSelfTest"));
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, QDir::tempPath());
+
     g_log.setFileName(QDir::tempPath() + "/baud_timestamper_test.txt");
     if (!g_log.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
         return 1;
@@ -526,6 +535,84 @@ int main(int argc, char **argv)
         check(lines.contains(QStringLiteral("0.003000,-inf")), "CSV 导出：-Inf 写成 -inf");
 
         QFile::remove(path);
+    }
+
+    // ---- 12. 通道配置：名称 / 类型 / 码值解码 / 持久化往返 ----
+    {
+        ChannelConfig config;
+        check(config.indexOfType(QStringLiteral("foc.state")) >= 0,
+              "通道配置：默认类型 foc.state 存在");
+        check(config.indexOfType(QStringLiteral("prot_val.fault")) >= 0,
+              "通道配置：默认类型 prot_val.fault 存在");
+
+        config.setChannelName(0, QStringLiteral("速度"));
+        check(config.channelName(0) == QStringLiteral("速度"),
+              "通道配置：自定义名称生效");
+        check(config.channelName(1) == QStringLiteral("CH1"),
+              "通道配置：未改名的通道仍是 CH1");
+        check(config.channelDisplayName(0) == QStringLiteral("速度")
+                  && config.channelDisplayName(1).isEmpty(),
+              "通道配置：原始名与回退名区分正确");
+
+        config.setChannelType(0, QStringLiteral("foc.state"));
+        check(config.codeName(0, 6.0) == QStringLiteral("RUN"),
+              "通道配置：命中码表返回码名 RUN");
+        check(config.codeName(0, 7.0).isEmpty(),
+              "通道配置：未命中码表返回空");
+        check(config.codeName(1, 6.0).isEmpty(),
+              "通道配置：未指定类型的通道不做码值解释");
+
+        // 新增自定义类型与码表
+        const int typeIndex = config.addType(QStringLiteral("my.state"),
+                                              QStringLiteral("自定义状态"));
+        check(typeIndex >= 0, "通道配置：新增通道类型成功");
+        QVector<ChannelCode> codes;
+        codes.append({QStringLiteral("OK"), 0.0});
+        codes.append({QStringLiteral("BUSY"), 3.0});
+        config.setCodes(typeIndex, codes);
+        config.setChannelType(1, QStringLiteral("my.state"));
+        check(config.codeName(1, 3.0) == QStringLiteral("BUSY"),
+              "通道配置：自定义类型码值解码正确");
+
+        // 删除类型后引用它的通道要回到纯数值
+        config.removeType(typeIndex);
+        check(config.channelTypeId(1).isEmpty(),
+              "通道配置：删除类型后通道引用被清空");
+
+        // 持久化往返
+        config.save();
+        ChannelConfig loaded;
+        loaded.load();
+        check(loaded.channelName(0) == QStringLiteral("速度"),
+              "通道配置：持久化后名称往返正确");
+        check(loaded.codeName(0, 6.0) == QStringLiteral("RUN"),
+              "通道配置：持久化后码表往返正确");
+
+        // 改类型 ID：引用该类型的通道必须跟着改，否则会变成悬空引用
+        config.setTypeInfo(config.indexOfType(QStringLiteral("foc.state")),
+                           QStringLiteral("my.state"), QStringLiteral("我的状态"));
+        check(config.channelTypeId(0) == QStringLiteral("my.state"),
+              "通道配置：改类型 ID 后通道引用同步更新");
+        check(config.codeName(0, 6.0) == QStringLiteral("RUN"),
+              "通道配置：改类型 ID 后码值解释仍然有效");
+
+        // 删光所有类型后保存，重新加载仍然是“没有类型”，不能冒出默认类型
+        while (config.typeCount() > 0)
+            config.removeType(0);
+        config.save();
+        ChannelConfig emptyLoaded;
+        emptyLoaded.load();
+        check(emptyLoaded.typeCount() == 0,
+              QStringLiteral("通道配置：删光类型后持久化仍为空（实测 %1 个类型）")
+                  .arg(emptyLoaded.typeCount()));
+        check(emptyLoaded.codeName(0, 6.0).isEmpty(),
+              "通道配置：没有类型时不做码值解释");
+
+        // 清理测试写入的设置（自测用独立应用名与临时目录，不会影响正式程序）
+        QSettings settings;
+        settings.remove(QStringLiteral("channels/config"));
+        settings.sync();
+        QFile::remove(QDir::tempPath() + "/BaudSelfTest/BaudSelfTest.ini");
     }
 
     g_log.write(QStringLiteral("%1\n")
